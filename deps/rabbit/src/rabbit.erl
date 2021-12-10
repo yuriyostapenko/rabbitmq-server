@@ -963,11 +963,23 @@ do_run_postlaunch_phase(Plugins) ->
                   end
           end, Plugins),
 
-        %% Export definitions after all plugins have been enabled,
+        %% Import definitions after all plugins have been enabled,
         %% see rabbitmq/rabbitmq-server#2384.
-        case rabbit_definitions:maybe_load_definitions() of
-            ok           -> ok;
-            DefLoadError -> throw(DefLoadError)
+        %% Also, if target_cluster_size_hint is set, don't import
+        %% definitions until all nodes join the cluster
+        %% rabbitmq/rabbitmq-server#3850
+        TargetClusterSize = rabbit_nodes:target_cluster_size_hint(),
+        CurrentClusterSize = rabbit_nodes:total_count(),
+        case CurrentClusterSize >= TargetClusterSize of
+            true -> 
+                ?LOG_INFO("Target cluster size of ~p node(s) has been reached.", [TargetClusterSize]),
+                case rabbit_definitions:maybe_load_definitions() of
+                    ok           -> ok;
+                    DefLoadError -> throw(DefLoadError)
+                end;
+            false ->
+                ?LOG_INFO("Not importing definitions because ~p more node(s) are expected in the cluster.", [TargetClusterSize - CurrentClusterSize]),
+                ok
         end,
 
         %% Start listeners after all plugins have been enabled,

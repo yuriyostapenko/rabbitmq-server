@@ -222,9 +222,18 @@ is_enabled(Type) ->
     {'absent', amqqueue:amqqueue(), absent_reason()} |
     {protocol_error, Type :: atom(), Reason :: string(), Args :: term()}.
 declare(Q0, Node) ->
-    Q = rabbit_queue_decorator:set(rabbit_policy:set(Q0)),
-    Mod = amqqueue:get_type(Q),
-    Mod:declare(Q, Node).
+    TargetClusterSize = rabbit_nodes:target_cluster_size_hint(),
+    CurrentClusterSize = rabbit_nodes:total_count(),
+    case CurrentClusterSize >= TargetClusterSize of
+        true ->
+            Q = rabbit_queue_decorator:set(rabbit_policy:set(Q0)),
+            Mod = amqqueue:get_type(Q),
+            Mod:declare(Q, Node);
+        false ->
+            timer:sleep(5000),
+            declare(Q0, Node)
+    end.
+
 
 -spec delete(amqqueue:amqqueue(), boolean(),
              boolean(), rabbit_types:username()) ->
