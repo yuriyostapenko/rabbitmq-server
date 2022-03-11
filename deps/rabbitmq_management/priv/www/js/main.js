@@ -8,6 +8,15 @@ $(document).ready(function() {
                 replace_content('outer', format('login_uaa', {}));
             }
         });
+    } else if (enable_oauth) {
+        get(oauth_location + "/.well-known/oauth-authorization-server", "application/json", function(req) {
+            if (req.status !== 200) {
+                replace_content('outer', format('login_oauth', {}));
+                replace_content('login-status', '<p class="warning">' + oauth_location + "does not appear to be a running OAuth2 IDP or may not have a trusted SSL certificate" + '</p> <button id="loginWindow" onclic="oauth_login_window()">Single Sign On</button>');
+            } else {
+                replace_content('outer', format('login_oauth', {}));
+            }
+        });
     } else {
         replace_content('outer', format('login', {}));
         start_app_login();
@@ -63,7 +72,7 @@ function start_app_login() {
             check_login();
         });
     });
-    if (enable_uaa) {
+    if (enable_uaa || enable_oauth) {
         var token = getAccessToken();
         if (token != null) {
             set_auth_pref(uaa_client_id + ':' + token);
@@ -79,7 +88,6 @@ function start_app_login() {
         }
     }
 }
-
 
 function uaa_logout_window() {
     uaa_invalid = true;
@@ -102,6 +110,27 @@ function uaa_login_window() {
     window.open(loginRedirectUrl, "LOGIN_WINDOW");
 }
 
+function oauth_logout_window() {
+    oauth_invalid = true;
+    oauth_login_window();
+}
+
+function oauth_login_window() {
+    var redirect;
+    if (window.location.hash != "") {
+        redirect = window.location.href.split(window.location.hash)[0];
+    } else {
+        redirect = window.location.href
+    };
+    var loginRedirectUrl;
+    if (oauth_invalid) {
+        loginRedirectUrl = Singular.properties.oauthLocation + '/logout.do?client_id=' + Singular.properties.clientId + '&redirect=' + redirect;
+    } else {
+        loginRedirectUrl = Singular.properties.oauthLocation + '/authorize?response_type=token&client_id=' + Singular.properties.clientId + '&redirect_uri=' + redirect;
+    };
+    window.open(loginRedirectUrl, "LOGIN_WINDOW");
+}
+
 function check_login() {
     user = JSON.parse(sync_get('/whoami'));
     if (user == false) {
@@ -112,6 +141,9 @@ function check_login() {
         if (enable_uaa) {
             uaa_invalid = true;
             replace_content('login-status', '<button id="loginWindow" onclick="uaa_login_window()">Log out</button>');
+        } else if (enable_oauth) {
+            oauth_invalid = true;
+            replace_content('login-status', '<button id="loginWindow" onclick="oauth_login_window()">Log out</button>')
         } else {
             replace_content('login-status', '<p>Login failed</p>');
         }
@@ -602,7 +634,7 @@ function submit_import(form) {
                 vhost_part = '/' + esc(vhost_name);
             }
 
-            if (enable_uaa) {
+            if (enable_uaa || enable_oauth) {
                 var form_action = "/definitions" + vhost_part + '?token=' + get_pref('uaa_token');
             } else {
                 var form_action = "/definitions" + vhost_part + '?auth=' + get_cookie_value('auth');
@@ -646,7 +678,7 @@ function postprocess() {
     $('#download-definitions').on('click', function() {
             var idx = $("select[name='vhost-download'] option:selected").index();
             var vhost = ((idx <=0 ) ? "" : "/" + esc($("select[name='vhost-download'] option:selected").val()));
-        if (enable_uaa) {
+        if (enable_uaa || enable_oauth) {
             var path = 'api/definitions' + vhost + '?download=' +
                 esc($('#download-filename').val()) +
                 '&token=' + get_pref('uaa_token');
@@ -1189,7 +1221,7 @@ function has_auth_cookie_value() {
 }
 
 function auth_header() {
-    if(has_auth_cookie_value() && enable_uaa) {
+    if(has_auth_cookie_value() && (enable_uaa || enable_oauth)) {
         return "Bearer " + decodeURIComponent(get_pref('uaa_token'));
     } else {
         if(has_auth_cookie_value()) {
