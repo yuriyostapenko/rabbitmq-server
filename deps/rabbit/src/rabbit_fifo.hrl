@@ -1,3 +1,26 @@
+<<<<<<< HEAD
+=======
+%% This Source Code Form is subject to the terms of the Mozilla Public
+%% License, v. 2.0. If a copy of the MPL was not distributed with this
+%% file, You can obtain one at https://mozilla.org/MPL/2.0/.
+%%
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+
+%% macros for memory optimised tuple structures
+%% [A|B] saves 1 byte compared to {A,B}
+-define(TUPLE(A, B), [A | B]).
+
+%% We only hold Raft index and message header in memory.
+%% Raw message data is always stored on disk.
+-define(MSG(Index, Header), ?TUPLE(Index, Header)).
+
+-define(IS_HEADER(H),
+        (is_integer(H) andalso H >= 0) orelse
+        is_list(H) orelse
+        (is_map(H) andalso is_map_key(size, H))).
+
+-type tuple(A, B) :: nonempty_improper_list(A, B).
+>>>>>>> 515780f5d4 (Bump (c) year)
 
 -type option(T) :: undefined | T.
 
