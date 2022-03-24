@@ -43,7 +43,7 @@ describe("login", () => {
         })
 
         it("should render the login form", () => {
-            JSDOM.fromFile("../index.html").then(dom => {
+            JSDOM.fromFile("../index.html", { runScripts: "dangerously" }).then(dom => {
                 const login = dom.window.document.getElementById('login')
                 expect(login).toBeDefined()
                 const loginStatus = dom.window.document.getElementById('login-status')
@@ -82,7 +82,7 @@ describe("login", () => {
             })
 
             it("should render the link to UAA", () => {
-                JSDOM.fromFile("../index.html").then(dom => {
+                JSDOM.fromFile("../index.html", { runScripts: "dangerously" }).then(dom => {
                     const login = dom.window.document.getElementById('login')
                     expect(login).toBeDefined()
                     const loginStatus = dom.window.document.getElementById('login-status')
