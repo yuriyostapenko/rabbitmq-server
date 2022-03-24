@@ -1,16 +1,26 @@
 const jsdom = require('jsdom')
 const { JSDOM } = jsdom
 
+const http = require('http')
+var enableDestroy = require('server-destroy')
+
 describe("login", () => {
+    var server
     var authResponse
-    class CustomResourceLoader extends jsdom.ResourceLoader {
-        fetch(url, options) {
-            if (url === "http://localhost:15672/auth") {
-                return Promise.resolve(Buffer.from(authResponse))
-            }
-            return super.fetch(url, options)
+    beforeAll(() => {
+        var authListener = (req,res) => {
+            res.setHeader("Content-Type", "application/json")
+            res.writeHead(200)
+            res.end(authResponse)
         }
-    }
+        server = http.createServer(authListener)
+        server.listen(15672)
+        enableDestroy(server)
+    })
+
+    afterAll(() => {
+        server.destroy()
+    })
 
     describe("outer", () => {
         it("should have an outer block", () => {
@@ -33,10 +43,7 @@ describe("login", () => {
         })
 
         it("should render the login form", () => {
-            JSDOM.fromFile("../index.html", {
-                    runScripts: "dangerously",
-                    url: "http://localhost:15672"
-                }).then(dom => {
+            JSDOM.fromFile("../index.html", { runScripts: "dangerously" }).then(dom => {
                 const login = dom.window.document.getElementById('login')
                 expect(login).toBeDefined()
                 const loginStatus = dom.window.document.getElementById('login-status')
@@ -75,10 +82,7 @@ describe("login", () => {
             })
 
             it("should render the link to UAA", () => {
-                JSDOM.fromFile("../index.html", {
-                        runScripts: "dangerously",
-                        url: "http://localhost:15672"
-                    }).then(dom => {
+                JSDOM.fromFile("../index.html", { runScripts: "dangerously" }).then(dom => {
                     const login = dom.window.document.getElementById('login')
                     expect(login).toBeDefined()
                     const loginStatus = dom.window.document.getElementById('login-status')

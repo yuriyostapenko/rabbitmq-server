@@ -1,10 +1,13 @@
 {
   "devDependencies": {
     "cross-env": "^7.0.3",
+    "fs": "^0.0.1-security",
+    "http": "^0.0.1-security",
     "ignore-styles": "^5.0.1",
     "jasmine": "^4.0.2",
     "jasmine-node": "^3.0.0",
-    "jsdom": "^19.0.0"
+    "jsdom": "^19.0.0",
+    "server-destroy": "^1.0.1"
   },
   "scripts": {
     "test": "cross-env NODE_ENV=test jasmine --config=test/jasmine.json"
