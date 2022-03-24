@@ -12,6 +12,7 @@ describe("login", () => {
             res.setHeader("Content-Type", "application/json")
             res.writeHead(200)
             res.end(authResponse)
+
         }
         server = http.createServer(authListener)
         server.listen(15672)
