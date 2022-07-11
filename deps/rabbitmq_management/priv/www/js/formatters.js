@@ -884,10 +884,41 @@ function filter_ui_pg(items, truncate, appendselect) {
 
 
 function filter_ui(items) {
-    var current_truncate = parseInt(get_pref('truncate'));
-    var truncate_input   = '<input type="text" id="truncate" value="' +
-        current_truncate + '">';
-     var selected = '';
+    var total = items.length
+    var current_truncate = parseInt(get_pref('truncate'))
+    var truncate_input   = '<input type="text" id="truncate" value="' + current_truncate + '">'
+    var selected = ''
+    // items = items.filter(matcher(current_filter, current_filter_regex))
+
+    var res = '<div class="filter"><table' +
+    (current_filter == '' ? '' : ' class="filter-active"') +
+    '><tr><th>Filter:</th>' +
+    '<td><input id="filter" type="text" value="' +
+    fmt_escape_html(current_filter) + '"/>' +
+    '<input type="checkbox" name="filter-regex-mode" id="filter-regex-mode"' +
+    (current_filter_regex_on ? ' checked' : '') +
+    '/><label for="filter-regex-mode">Regex</label> <span class="help" id="filter-regex"></span>' +
+    '</td></tr></table>';
+
+
+    items = items.filter(matcher(current_filter, current_filter_regex))
+
+    // if (current_filter != '') {
+    //     var items2 = [];
+    //     for (var i in items) {
+    //         var item = items[i];
+    //         var item_name = item.name.toLowerCase();
+    //         if ((current_filter_regex_on &&
+    //             current_filter_regex &&
+    //             current_filter_regex.test(item_name)) ||
+    //             item_name.indexOf(current_filter.toLowerCase()) != -1) {
+    //                 items2.push(item);
+    //         }
+    //     }
+    //     items.length = items2.length;
+    //     for (var i in items2) items[i] = items2[i];
+    // }
+
     if (items.length > current_truncate) {
         selected += '<span id="filter-warning-show"> ' +
             '(only showing first</span> ';
@@ -896,9 +927,34 @@ function filter_ui(items) {
     else {
         selected += ', page size up to ';
     }
-   return filter_ui_pg(items, truncate_input, selected);
 
+    function items_desc(l) {
+        return l == 1 ? (l + ' item') : (l + ' items');
+    }
+
+    var current_selected = current_filter == '' ? (items_desc(items.length)) :
+        (items.length + ' of ' + items_desc(total) + ' selected');
+
+
+    current_selected += selected;
+
+    res += '<p id="filter-truncate"><span class="updatable">' + current_selected +
+        '</span>' + truncate_input + '</p>';
+    res += '</div>';
+
+    return res;
 }
+
+function matcher(matchString = '', matchRegex = false) {
+    return item => (
+        (matchString == '' && !matchRegex)
+        || (item.name.toLowerCase() == matchString.toLowerCase())
+        || (matchRegex && matchRegex.test(item.name))
+    )
+}
+
+//pagination
+// items.slice((page_number-1)*page_size, page_number*page_size)
 
 function paginate_header_ui(pages, context, label){
      if (label == undefined) {
