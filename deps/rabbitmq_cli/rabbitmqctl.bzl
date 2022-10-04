@@ -42,7 +42,6 @@ def _impl(ctx):
 
     escript = ctx.actions.declare_file(path_join("escript", "rabbitmqctl"))
     ebin = ctx.actions.declare_directory("ebin")
-    mix_invocation_dir = ctx.actions.declare_directory("{}_mix".format(ctx.label.name))
     fetched_srcs = ctx.actions.declare_file("deps.tar")
 
     deps = flat_deps(ctx.attr.deps)
@@ -74,7 +73,7 @@ export PATH="$ABS_ELIXIR_HOME"/bin:"{erlang_home}"/bin:${{PATH}}
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
 
-MIX_INVOCATION_DIR="{mix_invocation_dir}"
+MIX_INVOCATION_DIR=$(mktemp -d)
 
 cp -r {package_dir}/config ${{MIX_INVOCATION_DIR}}/config
 cp -r {package_dir}/lib ${{MIX_INVOCATION_DIR}}/lib
@@ -111,7 +110,6 @@ find . -type l -delete
         maybe_install_erlang = maybe_install_erlang(ctx),
         erlang_home = erlang_home,
         elixir_home = elixir_home,
-        mix_invocation_dir = mix_invocation_dir.path,
         package_dir = package_dir,
         deps_dir = deps_dir,
         escript_path = escript.path,
@@ -130,7 +128,7 @@ find . -type l -delete
 
     ctx.actions.run_shell(
         inputs = inputs,
-        outputs = [escript, ebin, mix_invocation_dir, fetched_srcs],
+        outputs = [escript, ebin, fetched_srcs],
         command = script,
         mnemonic = "MIX",
     )
