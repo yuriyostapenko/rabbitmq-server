@@ -124,7 +124,7 @@ get_used_fd({win32, _}, State0) ->
                     UsedFd = get_used_fd_via_powershell(Pid),
                     {State1, UsedFd};
                 _  ->
-                    case find_files_line(HandleExeOutput) of
+                    case parse_handle_output(HandleExeOutput) of
                         unknown ->
                             State1 = log_fd_warning_once("handle.exe output did not contain "
                                                          "a line beginning with 'File', using "
@@ -138,16 +138,50 @@ get_used_fd({win32, _}, State0) ->
             end
     end.
 
-find_files_line([]) ->
+%% handle.exe /accepteula -s -p 10416
+%%
+%% Nthandle v5.0 - Handle viewer
+%% Copyright (C) 1997-2022 Mark Russinovich
+%% Sysinternals - www.sysinternals.com
+%%
+%% Handle type summary:
+%%   <Unknown type>  : 113
+%%   ALPC Port       : 8
+%%   Desktop         : 1
+%%   Directory       : 2
+%%   Event           : 130
+%%   File            : 32
+%%   IoCompletion    : 19
+%%   IoCompletionReserve: 1
+%%   IRTimer         : 6
+%%   Key             : 17
+%%   Mutant          : 2
+%%   Process         : 2
+%%   Section         : 3
+%%   Semaphore       : 8
+%%   Thread          : 17
+%%   Timer           : 2
+%%   TpWorkerFactory : 3
+%%   WaitCompletionPacket: 15
+%%   WindowStation   : 2
+%% Total handles: 383
+
+parse_handle_output([]) ->
     unknown;
 % Note:
 % rabbit_misc:win32_cmd trims the output, so there will be no
 % leading/trailing whitespace
-find_files_line(["File " ++ Rest | _T]) ->
+% "Total handles: 387"
+parse_handle_output(["Total handles " ++ Rest | _T]) ->
+    [TotalHandles] = string:tokens(Rest, ": "),
+    list_to_integer(TotalHandles);
+% Note:
+% File, if present, always comes before "Total handles"
+parse_handle_output(["File " ++ Rest | _T]) ->
     [Files] = string:tokens(Rest, ": "),
     list_to_integer(Files);
-find_files_line([_H | T]) ->
-    find_files_line(T).
+parse_handle_output([_H | T]) ->
+    parse_handle_output(T).
 
 get_used_fd_via_powershell(Pid) ->
     Cmd = "Get-Process -Id " ++ Pid ++ " | Select-Object -ExpandProperty HandleCount",
