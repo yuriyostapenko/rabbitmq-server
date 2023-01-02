@@ -208,7 +208,7 @@ jobs:
     #!   uses: mxschmitt/action-tmate@v3
     - name: RUN EXCLUSIVE TESTS
       run: |
-        MIXED_EXCLUSIVE_TESTS=$(bazel query 'attr(tags, "mixed-version-cluster", attr(tags, "exclusive", tests(//...)))')
+        MIXED_EXCLUSIVE_TESTS=$(bazel query 'attr(tags, "mixed-version-cluster", attr(tags, "no-remote-exec", tests(//...)))')
         bazelisk test $MIXED_EXCLUSIVE_TESTS \
           --config=buildbuddy \
           --test_tag_filters=-aws,-docker \

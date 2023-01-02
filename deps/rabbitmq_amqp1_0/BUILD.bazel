@@ -98,7 +98,7 @@ suites = [
         flaky = True,
         tags = [
             "dotnet",
-            "exclusive",
+            "no-remote-exec",
         ],
         test_env = {
             "TMPDIR": "$TEST_TMPDIR",
