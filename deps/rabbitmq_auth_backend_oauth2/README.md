@@ -345,6 +345,10 @@ field will be ignored as long as the token provides a client ID.
 
 ## License and Copyright
 
+<<<<<<< HEAD
 (c) 2016-2020 VMware, Inc. or its affiliates.
+=======
+(c) 2016-2023 VMware, Inc. or its affiliates.
+>>>>>>> ec4f1dba7d ((c) year bump: 2022 => 2023)
 
 Released under the Mozilla Public License 2.0, same as RabbitMQ.
