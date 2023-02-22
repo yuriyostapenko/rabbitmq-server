@@ -25,13 +25,17 @@
           %% we can't handle SIGCONT, the signal used to resume the
           %% program. Unfortunately, it makes a SIGTSTP handler less
           %% useful here.
-          sigtstp => ignore
+          sigtstp => ignore,
+
+          %% SIGTERM is triggered by Ctrl+C when Erlang is running in
+          %% the foreground. This is also the signal used by Docker to
+          %% stop a running container.
+          sigterm => stop
          }).
 
 -define(SIGNAL_HANDLED_BY_ERLANG(Signal),
         Signal =:= sigusr1 orelse
-        Signal =:= sigquit orelse
-        Signal =:= sigterm).
+        Signal =:= sigquit).
 
 -define(SERVER, erl_signal_server).
 
@@ -65,14 +69,11 @@ handle_event(Signal, State) when ?SIGNAL_HANDLED_BY_ERLANG(Signal) ->
     {ok, State};
 handle_event(Signal, State) ->
     case ?SIGNALS_HANDLED_BY_US of
-        %% The code below can be uncommented if we introduce a signal
-        %% which should stop RabbitMQ.
-        %
-        %#{Signal := stop} ->
-        %    logger:info(
-        %      "~ts received - shutting down",
-        %      [string:uppercase(atom_to_list(Signal))]),
-        %    ok = init:stop();
+        #{Signal := stop} ->
+            logger:info(
+              "~ts received - shutting down",
+              [string:uppercase(atom_to_list(Signal))]),
+            ok = rabbit:stop_and_halt();
         _ ->
             logger:info(
               "~ts received - unhandled signal",
