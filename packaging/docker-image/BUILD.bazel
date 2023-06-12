@@ -1,24 +1,27 @@
-load(
-    "@io_bazel_rules_docker//container:container.bzl",
-    "container_image",
-    "container_layer",
-)
-load(
-    "@io_bazel_rules_docker//contrib:test.bzl",
-    "container_test",
-)
-load(
-    "@io_bazel_rules_docker//docker/util:run.bzl",
-    "container_run_and_commit_layer",
-)
-load(
-    "@io_bazel_rules_docker//docker/package_managers:download_pkgs.bzl",
-    "download_pkgs",
-)
-load(
-    "@io_bazel_rules_docker//docker/package_managers:install_pkgs.bzl",
-    "install_pkgs",
-)
+load("@rules_oci//oci:defs.bzl", "oci_image")
+load(":docker.bzl", "docker_run_and_commit_layer")
+
+# load(
+#     "@io_bazel_rules_docker//container:container.bzl",
+#     "container_image",
+#     "container_layer",
+# )
+# load(
+#     "@io_bazel_rules_docker//contrib:test.bzl",
+#     "container_test",
+# )
+# load(
+#     "@io_bazel_rules_docker//docker/util:run.bzl",
+#     "container_run_and_commit_layer",
+# )
+# load(
+#     "@io_bazel_rules_docker//docker/package_managers:download_pkgs.bzl",
+#     "download_pkgs",
+# )
+# load(
+#     "@io_bazel_rules_docker//docker/package_managers:install_pkgs.bzl",
+#     "install_pkgs",
+# )
 
 BUILD_DEPS_PACKAGES = [
     "autoconf",
@@ -105,7 +108,7 @@ container_layer(
     ],
 )
 
-container_image(
+oci_image(
     name = "openssl_source",
     base = ":otp_pkgs_image",
     layers = [":openssl_source_layer"],
@@ -123,7 +126,7 @@ container_run_and_commit_layer(
     tags = ["manual"],
 )
 
-container_image(
+oci_image(
     name = "otp_source",
     base = ":otp_pkgs_image",
     directory = "/usr/local/src",
@@ -144,7 +147,7 @@ container_image(
     }),
 )
 
-container_run_and_commit_layer(
+docker_run_and_commit_layer(
     name = "otp_layer",
     commands = [
         "/usr/local/src/build_install_otp.sh",
@@ -155,54 +158,54 @@ container_run_and_commit_layer(
     tags = ["manual"],
 )
 
-container_layer(
-    name = "rabbitmq_tarball_layer",
-    directory = "/opt",
-    files = [
-        "10-default-guest-user.conf",
-        "docker-entrypoint.sh",
-        "install_rabbitmq.sh",
-    ],
-    tags = ["manual"],
-    tars = [
-        "//:package-generic-unix",
-    ],
-)
+# container_layer(
+#     name = "rabbitmq_tarball_layer",
+#     directory = "/opt",
+#     files = [
+#         "10-default-guest-user.conf",
+#         "docker-entrypoint.sh",
+#         "install_rabbitmq.sh",
+#     ],
+#     tags = ["manual"],
+#     tars = [
+#         "//:package-generic-unix",
+#     ],
+# )
 
 RABBITMQ_DATA_DIR = "/var/lib/rabbitmq"
 
 RABBITMQ_HOME = "/opt/rabbitmq"
 
-container_image(
-    name = "rabbitmq_tarball",
-    base = ":rabbitmq_pkgs_image",
-    env = {
-        "RABBITMQ_DATA_DIR": RABBITMQ_DATA_DIR,
-        "RABBITMQ_HOME": RABBITMQ_HOME,
-        "RABBITMQ_LOGS": "-",
-    },
-    layers = [
-        ":openssl_layer",
-        ":otp_layer",
-        ":rabbitmq_tarball_layer",
-    ],
-    tags = ["manual"],
-)
+# oci_image(
+#     name = "rabbitmq_tarball",
+#     base = ":rabbitmq_pkgs_image",
+#     env = {
+#         "RABBITMQ_DATA_DIR": RABBITMQ_DATA_DIR,
+#         "RABBITMQ_HOME": RABBITMQ_HOME,
+#         "RABBITMQ_LOGS": "-",
+#     },
+#     layers = [
+#         ":openssl_layer",
+#         ":otp_layer",
+#         ":rabbitmq_tarball_layer",
+#     ],
+#     tags = ["manual"],
+# )
 
-container_run_and_commit_layer(
-    name = "rabbitmq_layer",
-    commands = [
-        "/opt/install_rabbitmq.sh",
-        "rm /opt/install_rabbitmq.sh",
-    ],
-    exec_properties = FIRECRACKER_EXEC_PROPS,
-    image = ":rabbitmq_tarball.tar",
-    tags = ["manual"],
-)
+# container_run_and_commit_layer(
+#     name = "rabbitmq_layer",
+#     commands = [
+#         "/opt/install_rabbitmq.sh",
+#         "rm /opt/install_rabbitmq.sh",
+#     ],
+#     exec_properties = FIRECRACKER_EXEC_PROPS,
+#     image = ":rabbitmq_tarball.tar",
+#     tags = ["manual"],
+# )
 
 C_UTF8 = "C.UTF-8"
 
-container_image(
+oci_image(
     name = "rabbitmq",
     base = ":rabbitmq_pkgs_image",
     cmd = ["rabbitmq-server"],
@@ -217,10 +220,10 @@ container_image(
         "LANGUAGE": C_UTF8,
         "LC_ALL": C_UTF8,
     },
-    layers = [
+    tars = [
         ":openssl_layer",
         ":otp_layer",
-        ":rabbitmq_layer",
+        # ":rabbitmq_layer",
     ],
     ports = [
         "4369/tcp",  # epmd
@@ -252,52 +255,52 @@ container_image(
 # Wrapper targets for the tarred images are required in order to be able to run
 # commandTests in container_test targets.
 
-container_image(
-    name = "openssl_install_wrapper",
-    base = ":otp_source",
-    tags = ["manual"],
-)
+# oci_image(
+#     name = "openssl_install_wrapper",
+#     base = ":otp_source",
+#     tags = ["manual"],
+# )
 
-container_image(
-    name = "otp_install_wrapper",
-    base = ":rabbitmq_pkgs_image",
-    layers = [
-        ":otp_layer",
-    ],
-    tags = ["manual"],
-)
+# oci_image(
+#     name = "otp_install_wrapper",
+#     base = ":rabbitmq_pkgs_image",
+#     layers = [
+#         ":otp_layer",
+#     ],
+#     tags = ["manual"],
+# )
 
 # Tests
 
-container_test(
-    name = "openssl_test",
-    configs = ["//packaging/docker-image/test_configs:openssl_ubuntu.yaml"],
-    exec_properties = FIRECRACKER_EXEC_PROPS,
-    image = ":openssl_install_wrapper",
-    tags = [
-        "docker",
-        "manual",
-    ],
-)
+# container_test(
+#     name = "openssl_test",
+#     configs = ["//packaging/docker-image/test_configs:openssl_ubuntu.yaml"],
+#     exec_properties = FIRECRACKER_EXEC_PROPS,
+#     image = ":openssl_install_wrapper",
+#     tags = [
+#         "docker",
+#         "manual",
+#     ],
+# )
 
-container_test(
-    name = "otp_test",
-    configs = ["//packaging/docker-image/test_configs:otp_ubuntu.yaml"],
-    exec_properties = FIRECRACKER_EXEC_PROPS,
-    image = ":otp_install_wrapper",
-    tags = [
-        "docker",
-        "manual",
-    ],
-)
+# container_test(
+#     name = "otp_test",
+#     configs = ["//packaging/docker-image/test_configs:otp_ubuntu.yaml"],
+#     exec_properties = FIRECRACKER_EXEC_PROPS,
+#     image = ":otp_install_wrapper",
+#     tags = [
+#         "docker",
+#         "manual",
+#     ],
+# )
 
-container_test(
-    name = "rabbitmq_test",
-    configs = ["//packaging/docker-image/test_configs:rabbitmq_ubuntu.yaml"],
-    exec_properties = FIRECRACKER_EXEC_PROPS,
-    image = ":rabbitmq",
-    tags = [
-        "docker",
-        "manual",
-    ],
-)
+# container_test(
+#     name = "rabbitmq_test",
+#     configs = ["//packaging/docker-image/test_configs:rabbitmq_ubuntu.yaml"],
+#     exec_properties = FIRECRACKER_EXEC_PROPS,
+#     image = ":rabbitmq",
+#     tags = [
+#         "docker",
+#         "manual",
+#     ],
+# )
