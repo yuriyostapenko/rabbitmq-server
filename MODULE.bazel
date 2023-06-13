@@ -46,8 +46,12 @@ oci = use_extension(
 
 oci.pull(
     name = "ubuntu2004",
-    image = "index.docker.io/pivotalrabbitmq/ubuntu",
+    image = "docker.io/pivotalrabbitmq/ubuntu",
     tag = "20.04",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64",
+    ],
 )
 
 use_repo(
