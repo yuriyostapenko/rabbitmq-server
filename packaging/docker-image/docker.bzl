@@ -25,7 +25,7 @@ def docker_run_and_commit_layer(
         name = run_and_commit_name,
         srcs = [":%s" % oci_tarball_name],
         outs = ["%s.tar" % name],
-        cmd = """set -euxo pipefail
+        cmd = """set -euo pipefail
 
 DOCKER=$${{DOCKER:-docker}}
 
@@ -35,6 +35,8 @@ catch() {{
     $$DOCKER rm {name}
     $$DOCKER rmi {name}:latest
 }}
+
+set -x
 
 $$DOCKER load --input $(locations :{oci_tarball_name})
 $$DOCKER create --name {name} {name}:latest /bin/bash -c "{commands}"
