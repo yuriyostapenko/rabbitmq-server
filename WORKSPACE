@@ -119,6 +119,15 @@ load(
     "internal_erlang_from_http_archive",
 )
 
+PRE_CONFIGURE_CMDS = [
+    "jitFlag=",
+    'if [[ -n "${DISABLE_JIT:-}" ]]; then jitFlag=--disable-jit; fi',
+]
+
+EXTRA_CONFIGURE_OPTS = [
+    "$jitFlag",
+]
+
 erlang_config(
     internal_erlang_configs = [
         internal_erlang_from_github_release(
@@ -145,11 +154,15 @@ erlang_config(
             name = "25_3",
             sha256 = "83a36f3d90deef36adb615bbfb46cd327f0b76b7668e1f7f253fd66b4ae24518",
             version = "25.3.2.2",
+            pre_configure_cmds = PRE_CONFIGURE_CMDS,
+            extra_configure_opts = EXTRA_CONFIGURE_OPTS,
         ),
         internal_erlang_from_github_release(
             name = "26",
             sha256 = "d0c8e17f73e7146294ba39f499de086d0640058ec038c24021722ea612207d92",
             version = "26.0.1",
+            pre_configure_cmds = PRE_CONFIGURE_CMDS,
+            extra_configure_opts = EXTRA_CONFIGURE_OPTS,
         ),
         internal_erlang_from_http_archive(
             name = "git_master",
