@@ -9,6 +9,10 @@ load(
     "@rabbitmq-server//bazel/elixir:mix_archive_build.bzl",
     "mix_archive_build",
 )
+load(
+    "@rabbitmq-server//bazel/elixir:elixir_bytecode.bzl",
+    "elixir_bytecode",
+)
 
 mix_archive_build(
     name = "csv_ez",
@@ -22,6 +26,23 @@ mix_archive_build(
     srcs = ["@json//:sources"],
     out = "json.ez",
     archives = ["@hex//:archive"],
+)
+
+elixir_bytecode(
+    name = "beam_files",
+    srcs = glob([
+        "lib/**/*.ex",
+    ]),
+    ez_deps = [
+        ":csv.ez",
+        ":json.ez",
+    ],
+    mix_env = "prod",
+    deps = [
+        "//deps/rabbit_common:erlang_app",
+        "@observer_cli//:erlang_app",
+        "@stdout_formatter//:erlang_app",
+    ],
 )
 
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl
