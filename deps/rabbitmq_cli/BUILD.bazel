@@ -34,11 +34,17 @@ elixir_bytecode(
     srcs = glob([
         "lib/**/*.ex",
     ]),
+    env = {
+        "HOME": '"$(mktemp -d)"',
+        "MIX_ENV": "prod",
+    },
+    elixirc_opts = [
+        "-e ':application.ensure_all_started(:mix)'",
+    ],
     ez_deps = [
         ":csv.ez",
         ":json.ez",
     ],
-    mix_env = "prod",
     deps = [
         "//deps/rabbit_common:erlang_app",
         "@observer_cli//:erlang_app",

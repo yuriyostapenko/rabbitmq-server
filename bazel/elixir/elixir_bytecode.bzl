@@ -34,6 +34,11 @@ def _impl(ctx):
             erl_libs_dir,
         )
 
+    env = "\n".join([
+        "export {}={}".format(k, v)
+        for k, v in ctx.attr.env.items()
+    ])
+
     script = """set -euo pipefail
 
 {maybe_install_erlang}
@@ -48,22 +53,22 @@ if [ -n "{erl_libs_path}" ]; then
     export ERL_LIBS={erl_libs_path}
 fi
 
-export HOME="$(mktemp -d)"
-export MIX_ENV="{mix_env}"
+{env}
 
 export PATH="{erlang_home}/bin:$PATH"
 set -x
 "{elixir_home}"/bin/elixirc \\
     -o {out_dir} \\
-    -e ':application.ensure_all_started(:mix)' \\
+    {elixirc_opts} \\
     {srcs}
 """.format(
         maybe_install_erlang = maybe_install_erlang(ctx),
         erlang_home = erlang_home,
         elixir_home = elixir_home,
         erl_libs_path = erl_libs_path,
-        mix_env = ctx.attr.mix_env,
+        env = env,
         out_dir = ebin.path,
+        elixirc_opts = " ".join(ctx.attr.elixirc_opts),
         srcs = " ".join([f.path for f in ctx.files.srcs]),
     )
 
@@ -94,9 +99,8 @@ elixir_bytecode = rule(
         "srcs": attr.label_list(
             allow_files = [".ex"],
         ),
-        "mix_env": attr.string(
-            default = "prod"
-        ),
+        "elixirc_opts": attr.string_list(),
+        "env": attr.string_dict(),
         "deps": attr.label_list(
             providers = [ErlangAppInfo],
         ),
