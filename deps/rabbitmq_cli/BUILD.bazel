@@ -14,6 +14,11 @@ load(
     "@rabbitmq-server//bazel/elixir:elixir_bytecode.bzl",
     "elixir_bytecode",
 )
+load(
+    "@rabbitmq-server//bazel/elixir:elixir_ebin_dir.bzl",
+    "elixir_ebin_dir",
+)
+
 
 mix_archive_build(
     name = "csv_ez",
@@ -68,6 +73,13 @@ app_file(
     extra_apps = ["elixir", "logger"],
     modules = [":beam_files"],
     out = "rabbitmqctl.app",
+)
+
+elixir_ebin_dir(
+    name = "ebin",
+    beam_files_dir = ":beam_files",
+    app_file = ":app_file",
+    dest = "ebin",
 )
 
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl
