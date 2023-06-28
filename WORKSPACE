@@ -120,6 +120,7 @@ load(
 )
 
 PRE_CONFIGURE_CMDS = [
+    "export CC=clang",
     "jitFlag=",
     'if [[ -n "${DISABLE_JIT:-}" ]]; then jitFlag=--disable-jit; fi',
 ]
