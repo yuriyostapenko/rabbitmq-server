@@ -84,12 +84,18 @@ app_file(
     out = "rabbitmqctl.app",
 )
 
-elixir_ebin_dir(
-    name = "ebin",
-    beam_files_dir = ":beam_files",
-    app_file = ":app_file",
-    dest = "ebin",
-)
+# elixir_ebin_dir(
+#     name = "ebin",
+#     beam_files_dir = ":beam_files",
+#     app_file = ":app_file",
+#     dest = "ebin",
+# )
+
+# need to have a rule to produce elixir as an ErlangAppInfo, without
+# the conflicts from the :beam_files
+
+# then that elixir can be part of the deps of this erlang app
+# then we have to make the escript, then we can remove the rabbitmqctl rule
 
 erlang_app_info(
     name = "erlang_app2",
