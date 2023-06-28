@@ -1,10 +1,11 @@
 load("@rules_erlang//:dialyze.bzl", "dialyze", "plt")
+load("@rules_erlang//:app_file2.bzl", "app_file")
 load(":rabbitmqctl.bzl", "rabbitmqctl")
 load(":rabbitmqctl_check_formatted.bzl", "rabbitmqctl_check_formatted_test")
 load(":rabbitmqctl_test.bzl", "rabbitmqctl_test")
 load("//:rabbitmq_home.bzl", "rabbitmq_home")
 load("//:rabbitmq_run.bzl", "rabbitmq_run")
-load("//:rabbitmq.bzl", "RABBITMQ_DIALYZER_OPTS", "STARTS_BACKGROUND_BROKER_TAG", "without")
+load("//:rabbitmq.bzl", "APP_VERSION", "RABBITMQ_DIALYZER_OPTS", "STARTS_BACKGROUND_BROKER_TAG", "without")
 load(
     "@rabbitmq-server//bazel/elixir:mix_archive_build.bzl",
     "mix_archive_build",
@@ -43,6 +44,24 @@ elixir_bytecode(
         "@observer_cli//:erlang_app",
         "@stdout_formatter//:erlang_app",
     ],
+    dest = "beam_files",
+)
+
+app_file(
+    name = "app_file",
+    app_name = "rabbitmqctl",
+    app_description = "rabbitmqctl",
+    app_version = APP_VERSION,
+    app_env = """[{scopes,[{'rabbitmq-plugins',plugins},
+                             {rabbitmqctl,ctl},
+                             {'rabbitmq-diagnostics',diagnostics},
+                             {'rabbitmq-queues',queues},
+                             {'rabbitmq-streams',streams},
+                             {'rabbitmq-upgrade',upgrade},
+                             {'vmware-rabbitmq',vmware}]}]""",
+    extra_apps = ["elixir", "logger"],
+    modules = [":beam_files"],
+    out = "rabbitmqctl.app",
 )
 
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl

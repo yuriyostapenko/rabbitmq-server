@@ -9,7 +9,7 @@ load(
 )
 
 def _impl(ctx):
-    ebin = ctx.actions.declare_directory("ebin")
+    ebin = ctx.actions.declare_directory(ctx.attr.dest)
 
     (erlang_home, _, erlang_runfiles) = erlang_dirs(ctx)
     (elixir_home, elixir_runfiles) = elixir_dirs(ctx)
@@ -102,6 +102,9 @@ elixir_bytecode = rule(
         ),
         "ez_deps": attr.label_list(
             allow_files = [".ez"],
+        ),
+        "dest": attr.string(
+            mandatory = True,
         ),
         # "ebin": attr.output(),
         # "consolidated": attr.output(),
