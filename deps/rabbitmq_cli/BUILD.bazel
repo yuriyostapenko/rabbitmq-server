@@ -1,5 +1,6 @@
 load("@rules_erlang//:dialyze.bzl", "dialyze", "plt")
 load("@rules_erlang//:app_file2.bzl", "app_file")
+load("@rules_erlang//:erlang_app_info.bzl", "erlang_app_info")
 load(":rabbitmqctl.bzl", "rabbitmqctl")
 load(":rabbitmqctl_check_formatted.bzl", "rabbitmqctl_check_formatted_test")
 load(":rabbitmqctl_test.bzl", "rabbitmqctl_test")
@@ -34,11 +35,23 @@ mix_archive_build(
     archives = ["@hex//:archive"],
 )
 
+APP_NAME = "rabbitmqctl"
+
+EXTRA_APPS = ["elixir", "logger"]
+
+SRCS = glob([
+    "lib/**/*.ex",
+])
+
+DEPS = [
+    "//deps/rabbit_common:erlang_app",
+    "@observer_cli//:erlang_app",
+    "@stdout_formatter//:erlang_app",
+]
+
 elixir_bytecode(
     name = "beam_files",
-    srcs = glob([
-        "lib/**/*.ex",
-    ]),
+    srcs = SRCS,
     env = {
         "HOME": '"$(mktemp -d)"',
         "MIX_ENV": "prod",
@@ -50,18 +63,14 @@ elixir_bytecode(
         ":csv.ez",
         ":json.ez",
     ],
-    deps = [
-        "//deps/rabbit_common:erlang_app",
-        "@observer_cli//:erlang_app",
-        "@stdout_formatter//:erlang_app",
-    ],
+    deps = DEPS,
     dest = "beam_files",
 )
 
 app_file(
     name = "app_file",
-    app_name = "rabbitmqctl",
-    app_description = "rabbitmqctl",
+    app_name = APP_NAME,
+    app_description = APP_NAME,
     app_version = APP_VERSION,
     app_env = """[{scopes,[{'rabbitmq-plugins',plugins},
                              {rabbitmqctl,ctl},
@@ -70,7 +79,7 @@ app_file(
                              {'rabbitmq-streams',streams},
                              {'rabbitmq-upgrade',upgrade},
                              {'vmware-rabbitmq',vmware}]}]""",
-    extra_apps = ["elixir", "logger"],
+    extra_apps = EXTRA_APPS,
     modules = [":beam_files"],
     out = "rabbitmqctl.app",
 )
@@ -80,6 +89,20 @@ elixir_ebin_dir(
     beam_files_dir = ":beam_files",
     app_file = ":app_file",
     dest = "ebin",
+)
+
+erlang_app_info(
+    name = "erlang_app2",
+    app_name = APP_NAME,
+    extra_apps = EXTRA_APPS,
+    hdrs = [],
+    app = ":app_file",
+    beam = [":beam_files"],
+    priv = [],
+    license_files = glob(["LICENSE*"]),
+    srcs = SRCS,
+    deps = DEPS,
+    visibility = ["//visibility:public"],
 )
 
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl
