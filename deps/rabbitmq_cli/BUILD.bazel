@@ -15,11 +15,15 @@ load(
     "@rabbitmq-server//bazel/elixir:elixir_bytecode.bzl",
     "elixir_bytecode",
 )
-load(
-    "@rabbitmq-server//bazel/elixir:elixir_ebin_dir.bzl",
-    "elixir_ebin_dir",
-)
 
+# load(
+#     "@rabbitmq-server//bazel/elixir:elixir_ebin_dir.bzl",
+#     "elixir_ebin_dir",
+# )
+load(
+    "@rabbitmq-server//bazel/elixir:erlang_app_filter_module_conflicts.bzl",
+    "erlang_app_filter_module_conflicts",
+)
 
 mix_archive_build(
     name = "csv_ez",
@@ -37,7 +41,10 @@ mix_archive_build(
 
 APP_NAME = "rabbitmqctl"
 
-EXTRA_APPS = ["elixir", "logger"]
+EXTRA_APPS = [
+    "elixir",
+    "logger",
+]
 
 SRCS = glob([
     "lib/**/*.ex",
@@ -52,26 +59,25 @@ DEPS = [
 elixir_bytecode(
     name = "beam_files",
     srcs = SRCS,
+    dest = "beam_files",
+    elixirc_opts = [
+        "-e ':application.ensure_all_started(:mix)'",
+    ],
     env = {
         "HOME": '"$(mktemp -d)"',
         "MIX_ENV": "prod",
     },
-    elixirc_opts = [
-        "-e ':application.ensure_all_started(:mix)'",
-    ],
     ez_deps = [
         ":csv.ez",
         ":json.ez",
     ],
     deps = DEPS,
-    dest = "beam_files",
 )
 
 app_file(
     name = "app_file",
-    app_name = APP_NAME,
+    out = "rabbitmqctl.app",
     app_description = APP_NAME,
-    app_version = APP_VERSION,
     app_env = """[{scopes,[{'rabbitmq-plugins',plugins},
                              {rabbitmqctl,ctl},
                              {'rabbitmq-diagnostics',diagnostics},
@@ -79,9 +85,10 @@ app_file(
                              {'rabbitmq-streams',streams},
                              {'rabbitmq-upgrade',upgrade},
                              {'vmware-rabbitmq',vmware}]}]""",
+    app_name = APP_NAME,
+    app_version = APP_VERSION,
     extra_apps = EXTRA_APPS,
     modules = [":beam_files"],
-    out = "rabbitmqctl.app",
 )
 
 # elixir_ebin_dir(
@@ -96,19 +103,24 @@ app_file(
 
 # then that elixir can be part of the deps of this erlang app
 # then we have to make the escript, then we can remove the rabbitmqctl rule
+erlang_app_filter_module_conflicts(
+    name = "elixir2",
+    src = "//bazel/elixir:erlang_app",
+    without = [":beam_files"],
+)
 
 erlang_app_info(
     name = "erlang_app2",
-    app_name = APP_NAME,
-    extra_apps = EXTRA_APPS,
+    srcs = SRCS,
     hdrs = [],
     app = ":app_file",
+    app_name = APP_NAME,
     beam = [":beam_files"],
-    priv = [],
+    extra_apps = EXTRA_APPS,
     license_files = glob(["LICENSE*"]),
-    srcs = SRCS,
-    deps = DEPS,
+    priv = [],
     visibility = ["//visibility:public"],
+    deps = [":elixir2"] + DEPS,
 )
 
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl
