@@ -1,6 +1,7 @@
 load("@rules_erlang//:dialyze.bzl", "dialyze", "plt")
 load("@rules_erlang//:app_file2.bzl", "app_file")
 load("@rules_erlang//:erlang_app_info.bzl", "erlang_app_info")
+load("@rules_erlang//:escript.bzl", "escript_archive")
 load(":rabbitmqctl.bzl", "rabbitmqctl")
 load(":rabbitmqctl_check_formatted.bzl", "rabbitmqctl_check_formatted_test")
 load(":rabbitmqctl_test.bzl", "rabbitmqctl_test")
@@ -23,6 +24,10 @@ load(
 load(
     "@rabbitmq-server//bazel/elixir:erlang_app_filter_module_conflicts.bzl",
     "erlang_app_filter_module_conflicts",
+)
+load(
+    "@rabbitmq-server//bazel/elixir:elixir_escript_main.bzl",
+    "elixir_escript_main",
 )
 
 mix_archive_build(
@@ -120,7 +125,31 @@ erlang_app_info(
     license_files = glob(["LICENSE*"]),
     priv = [],
     visibility = ["//visibility:public"],
-    deps = [":elixir2"] + DEPS,
+    deps = [
+        ":elixir2",
+        "//bazel/elixir:logger",
+    ] + DEPS,
+)
+
+elixir_escript_main(
+    name = "escript_main",
+    out = "rabbitmqctl_escript.beam",
+    app = APP_NAME,
+    main_module = "RabbitMQCtl",
+    mix_config = "config/config.exs",
+)
+
+escript_archive(
+    name = "rabbitmqctl2",
+    app = ":erlang_app2",
+    beam = [":escript_main"],
+    drop_hrl = True,  # no-op for now
+    flat = True,  # no-op for now
+    headers = [
+        "shebang",
+        '{emu_args, "-escript main rabbitmqctl_escript -hidden"}',
+    ],
+    visibility = ["//visibility:public"],
 )
 
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl

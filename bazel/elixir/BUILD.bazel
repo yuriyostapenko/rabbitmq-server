@@ -1,3 +1,5 @@
+exports_files(["elixir_escript_main.exs"])
+
 load(
     ":elixir_as_app.bzl",
     "elixir_as_app",
