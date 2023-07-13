@@ -1,5 +1,5 @@
 load("@rules_oci//oci:defs.bzl", "oci_image")
-load(":docker.bzl", "docker_run_and_commit_layer")
+load(":docker.bzl", "docker_buildx_build")
 
 # load(
 #     "@io_bazel_rules_docker//container:container.bzl",
@@ -57,17 +57,54 @@ FIRECRACKER_EXEC_PROPS = {
     "container-image": "",
 }
 
-docker_run_and_commit_layer(
-    name = "otp_pkgs_image",
-    commands = [
-        "apt-get update",
-        "apt-get install -y --no-install-recommends " + " ".join(BUILD_DEPS_PACKAGES),
-        "rm -rf /var/lib/apt/lists/*",
+_CONTEXT = {
+    ":Dockerfile2": "Dockerfile",
+    "@openssl-3.1.1//file": "openssl-3.1.1.tar.gz",
+    "//:package-generic-unix": "package-generic-unix.tar.xz",
+}
+
+docker_buildx_build(
+    name = "rabbitmq",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64",
     ],
+    base = "@ubuntu2004",
+    context = select({
+        "@erlang_config//:erlang_24_3": {
+            "@otp_src_24//file": "otp.tar.gz",
+        } | _CONTEXT,
+        "@erlang_config//:erlang_25_0": {
+            "@otp_src_25_0//file": "otp.tar.gz",
+        } | _CONTEXT,
+        "@erlang_config//:erlang_25_1": {
+            "@otp_src_25_1//file": "otp.tar.gz",
+        } | _CONTEXT,
+        "@erlang_config//:erlang_25_2": {
+            "@otp_src_25_2//file": "otp.tar.gz",
+        } | _CONTEXT,
+        "@erlang_config//:erlang_25_3": {
+            "@otp_src_25_3//file": "otp.tar.gz",
+        } | _CONTEXT,
+        "@erlang_config//:erlang_26_0": {
+            "@otp_src_26//file": "otp.tar.gz",
+        } | _CONTEXT,
+    }),
     exec_properties = FIRECRACKER_EXEC_PROPS,
-    image = "@ubuntu2004",
     tags = ["manual"],
 )
+
+# docker_run_and_commit_layer(
+#     name = "otp_pkgs_image",
+#     commands = [
+#         "apt-get update",
+#         "apt-get install -y --no-install-recommends " + " ".join(BUILD_DEPS_PACKAGES),
+#         "rm -rf /var/lib/apt/lists/*",
+#     ],
+#     exec_properties = FIRECRACKER_EXEC_PROPS,
+#     image = "@ubuntu2004",
+#     tags = ["manual"],
+# )
 
 # download_pkgs(
 #     name = "otp_pkgs",
