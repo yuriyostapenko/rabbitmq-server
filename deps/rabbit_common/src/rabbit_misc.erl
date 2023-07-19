@@ -793,6 +793,7 @@ module_attributes_from_apps(Name, Apps) ->
                 {ok, Modules} <- [application:get_key(App, modules)]])),
     lists:foldl(
       fun ({App, Module}, Acc) ->
+              logger:alert("~s: App=~s Module=~p attributes=~0p", [?FUNCTION_NAME, App, Module, module_attributes(Module)]),
               case lists:append([Atts || {N, Atts} <- module_attributes(Module),
                                          N =:= Name]) of
                   []   -> Acc;
