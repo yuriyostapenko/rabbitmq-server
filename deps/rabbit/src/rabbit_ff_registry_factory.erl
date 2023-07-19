@@ -666,6 +666,7 @@ regen_registry_mod(RegistryVsn,
     logger:alert("~s: Forms=~p", [?FUNCTION_NAME, Forms]),
     case compile:forms(Forms, CompileOpts) of
         {ok, Mod, Bin, _} ->
+            logger:alert("~s: Bin=~0p", [?FUNCTION_NAME, Bin]),
             load_registry_mod(RegistryVsn, Mod, Bin);
         {error, Errors, Warnings} ->
             ?LOG_ERROR(
