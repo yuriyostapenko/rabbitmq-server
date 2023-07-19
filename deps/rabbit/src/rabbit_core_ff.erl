@@ -113,10 +113,3 @@
       stability     => stable,
       depends_on    => [stream_single_active_consumer]
      }}).
-
--rabbit_feature_flag(
-   {stream_filtering,
-    #{desc          => "Support for stream filtering.",
-      stability     => stable,
-      depends_on    => [stream_queue]
-     }}).

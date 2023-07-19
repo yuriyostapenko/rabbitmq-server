@@ -17,7 +17,7 @@ suite() ->
     [{timetrap, {seconds, 30}}].
 
 groups() ->
-    [{tests, [], [sort_partitions, filter_spec, filter_defined]}].
+    [{tests, [], [sort_partitions, filter_spec]}].
 
 init_per_suite(Config) ->
     Config.
@@ -65,17 +65,7 @@ sort_partitions(_Config) ->
                                                                          0)])]),
     ok.
 
-filter_defined(_) ->
-    [?assertEqual(Expected, rabbit_stream_utils:filter_defined(Properties))
-     || {Properties, Expected} <- [
-        {#{<<"filter.1">> => <<"">>}, true},
-        {#{<<"filter.1">> => <<"">>,
-           <<"sac">> => <<"false">>}, true},
-        {#{<<"foo">> => <<"bar">>}, false},
-        {#{}, false},
-        {undefined, false}]].
-
-filter_spec(_) ->
+filter_spec(_Config) ->
     [begin
          FilterSpec = rabbit_stream_utils:filter_spec(Properties),
          ?assert(maps:is_key(filter_spec, FilterSpec)),
