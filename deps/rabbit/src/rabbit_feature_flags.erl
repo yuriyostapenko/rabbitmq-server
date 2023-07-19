@@ -343,9 +343,11 @@ list(all) ->
       fun(_, FeatureProps) -> ?IS_FEATURE_FLAG(FeatureProps) end,
       rabbit_ff_registry_wrapper:list(all));
 list(enabled) ->
+    List = rabbit_ff_registry_wrapper:list(enabled),
+    logger:alert("~s: List=~p", [?FUNCTION_NAME, List]),
     maps:filter(
       fun(_, FeatureProps) -> ?IS_FEATURE_FLAG(FeatureProps) end,
-      rabbit_ff_registry_wrapper:list(enabled));
+      List);
 list(disabled) ->
     maps:filter(
       fun
