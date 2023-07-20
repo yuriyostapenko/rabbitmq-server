@@ -33,8 +33,7 @@ all() ->
 
 groups() ->
     [{single_node, [],
-      [filtering_ff, %% must stay at the top, feature flag disabled for this one
-       test_stream,
+      [test_stream,
        test_stream_tls,
        test_publish_v2,
        test_gc_consumers,
@@ -73,22 +72,6 @@ init_per_group(Group, Config)
                          {rabbitmq_ct_tls_verify, verify_none},
                          {rabbitmq_stream, verify_none}
                         ]),
-    %% filtering feature flag disabled for the first test,
-    %% then enabled in the end_per_testcase function
-    ExtraSetupSteps =
-        case Group of
-            single_node ->
-                [fun(StepConfig) ->
-                    rabbit_ct_helpers:merge_app_env(StepConfig,
-                                                    {rabbit,
-                                                     [{forced_feature_flags_on_init,
-                                                       [stream_queue,
-                                                        stream_sac_coordinator_unblock_group,
-                                                        stream_single_active_consumer]}]})
-                 end];
-            _ ->
-                []
-        end,
     rabbit_ct_helpers:run_setup_steps(
       Config1,
       [fun(StepConfig) ->
@@ -103,7 +86,6 @@ init_per_group(Group, Config)
                                                 [{connection_negotiation_step_timeout,
                                                   500}]})
        end]
-      ++ ExtraSetupSteps
       ++ rabbit_ct_broker_helpers:setup_steps());
 init_per_group(cluster = Group, Config) ->
     Config1 = rabbit_ct_helpers:set_config(
@@ -141,13 +123,6 @@ init_per_testcase(close_connection_on_consumer_update_timeout = TestCase, Config
 init_per_testcase(TestCase, Config) ->
     rabbit_ct_helpers:testcase_started(Config, TestCase).
 
-end_per_testcase(filtering_ff = TestCase, Config) ->
-    _ = rabbit_ct_broker_helpers:rpc(Config,
-                                     0,
-                                     rabbit_feature_flags,
-                                     enable,
-                                     [stream_filtering]),
-    rabbit_ct_helpers:testcase_finished(Config, TestCase);
 end_per_testcase(close_connection_on_consumer_update_timeout = TestCase, Config) ->
     ok = rabbit_ct_broker_helpers:rpc(Config,
                                       0,
@@ -157,32 +132,6 @@ end_per_testcase(close_connection_on_consumer_update_timeout = TestCase, Config)
     rabbit_ct_helpers:testcase_finished(Config, TestCase);
 end_per_testcase(TestCase, Config) ->
     rabbit_ct_helpers:testcase_finished(Config, TestCase).
-
-filtering_ff(Config) ->
-    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
-    Transport = gen_tcp,
-    Port = get_stream_port(Config),
-    Opts = [{active, false}, {mode, binary}],
-    {ok, S} = Transport:connect("localhost", Port, Opts),
-    C0 = rabbit_stream_core:init(0),
-    C1 = test_peer_properties(Transport, S, C0),
-    C2 = test_authenticate(Transport, S, C1),
-    C3 = test_create_stream(Transport, S, Stream, C2),
-    PublisherId = 42,
-    C4 = test_declare_publisher(Transport, S, PublisherId, Stream, C3),
-    Body = <<"hello">>,
-    C5 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body,
-                               publish_error, C4),
-    SubscriptionId = 42,
-    C6 = test_subscribe(Transport, S, SubscriptionId, Stream,
-                        #{<<"filter.0">> => <<"foo">>},
-                        ?RESPONSE_CODE_PRECONDITION_FAILED,
-                        C5),
-
-    C7 = test_delete_stream(Transport, S, Stream, C6),
-    _C8 = test_close(Transport, S, C7),
-    closed = wait_for_socket_close(Transport, S, 10),
-    ok.
 
 test_global_counters(Config) ->
     Stream = atom_to_binary(?FUNCTION_NAME, utf8),
@@ -239,14 +188,11 @@ test_publish_v2(Config) ->
     PublisherId = 42,
     C4 = test_declare_publisher(Transport, S, PublisherId, Stream, C3),
     Body = <<"hello">>,
-    C5 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body,
-                              publish_confirm, C4),
-    C6 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body,
-                              publish_confirm, C5),
+    C5 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body, C4),
+    C6 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body, C5),
     SubscriptionId = 42,
     C7 = test_subscribe(Transport, S, SubscriptionId, Stream,
                         #{<<"filter.0">> => <<"foo">>},
-                        ?RESPONSE_CODE_OK,
                         C6),
     C8 = test_deliver(Transport, S, SubscriptionId, 0, Body, C7),
     C8b = test_deliver(Transport, S, SubscriptionId, 1, Body, C8),
@@ -473,7 +419,6 @@ close_connection_on_consumer_update_timeout(Config) ->
     C4 = test_subscribe(Transport, S, SubId, Stream,
                         #{<<"single-active-consumer">> => <<"true">>,
                           <<"name">> => <<"foo">>},
-                        ?RESPONSE_CODE_OK,
                         C3),
     {Cmd, _C5} = receive_commands(Transport, S, C4),
     ?assertMatch({request, _, {consumer_update, SubId, true}}, Cmd),
@@ -736,21 +681,18 @@ test_declare_publisher(Transport, S, PublisherId, Stream, C0) ->
     C.
 
 test_publish_confirm(Transport, S, PublisherId, Body, C0) ->
-    test_publish_confirm(Transport, S, publish, PublisherId, Body,
-                         publish_confirm, C0).
+    test_publish_confirm(Transport, S, publish, PublisherId, Body, C0).
 
-test_publish_confirm(Transport, S, publish = PublishCmd, PublisherId, Body,
-                     ExpectedConfirmCommand,C0) ->
+test_publish_confirm(Transport, S, publish = PublishCmd, PublisherId, Body, C0) ->
     BodySize = byte_size(Body),
     Messages = [<<1:64, 0:1, BodySize:31, Body:BodySize/binary>>],
     PublishFrame =
         rabbit_stream_core:frame({PublishCmd, PublisherId, 1, Messages}),
     ok = Transport:send(S, PublishFrame),
     {Cmd, C} = receive_commands(Transport, S, C0),
-    ?assertMatch({ExpectedConfirmCommand, PublisherId, [1]}, Cmd),
+    ?assertMatch({publish_confirm, PublisherId, [1]}, Cmd),
     C;
-test_publish_confirm(Transport, S, publish_v2 = PublishCmd, PublisherId, Body,
-                     ExpectedConfirmCommand, C0) ->
+test_publish_confirm(Transport, S, publish_v2 = PublishCmd, PublisherId, Body, C0) ->
     BodySize = byte_size(Body),
     FilterValue = <<"foo">>,
     FilterValueSize = byte_size(FilterValue),
@@ -760,12 +702,7 @@ test_publish_confirm(Transport, S, publish_v2 = PublishCmd, PublisherId, Body,
         rabbit_stream_core:frame({PublishCmd, PublisherId, 1, Messages}),
     ok = Transport:send(S, PublishFrame),
     {Cmd, C} = receive_commands(Transport, S, C0),
-    case ExpectedConfirmCommand of
-        publish_confirm ->
-            ?assertMatch({ExpectedConfirmCommand, PublisherId, [1]}, Cmd);
-        publish_error ->
-            ?assertMatch({ExpectedConfirmCommand, PublisherId, _, [1]}, Cmd)
-    end,
+    ?assertMatch({publish_confirm, PublisherId, [1]}, Cmd),
     C.
 
 test_subscribe(Transport, S, SubscriptionId, Stream, C0) ->
@@ -774,7 +711,6 @@ test_subscribe(Transport, S, SubscriptionId, Stream, C0) ->
                    SubscriptionId,
                    Stream,
                    #{<<"random">> => <<"thing">>},
-                   ?RESPONSE_CODE_OK,
                    C0).
 
 test_subscribe(Transport,
@@ -782,7 +718,6 @@ test_subscribe(Transport,
                SubscriptionId,
                Stream,
                SubscriptionProperties,
-               ExpectedResponseCode,
                C0) ->
     SubCmd =
         {request, 1,
@@ -790,7 +725,7 @@ test_subscribe(Transport,
     SubscribeFrame = rabbit_stream_core:frame(SubCmd),
     ok = Transport:send(S, SubscribeFrame),
     {Cmd, C} = receive_commands(Transport, S, C0),
-    ?assertMatch({response, 1, {subscribe, ExpectedResponseCode}}, Cmd),
+    ?assertMatch({response, 1, {subscribe, ?RESPONSE_CODE_OK}}, Cmd),
     C.
 
 test_unsubscribe(Transport, Socket, SubscriptionId, C0) ->
