@@ -23,7 +23,7 @@ dpkgArch="$(dpkg --print-architecture)"; dpkgArch="${dpkgArch##*-}"
     --disable-hipe \
     --disable-sctp \
     --disable-silent-rules \
-    --enable-jit \
+    --disable-jit \
     --enable-clock-gettime \
     --enable-hybrid-heap \
     --enable-kernel-poll \
