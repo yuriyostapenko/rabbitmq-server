@@ -4,6 +4,7 @@ load("@rules_erlang//:dialyze.bzl", "dialyze", "plt")
 load(
     "//:rabbitmq.bzl",
     "BROKER_VERSION_REQUIREMENTS_ANY",
+    "ENABLE_FEATURE_MAYBE_EXPR",
     "RABBITMQ_DIALYZER_OPTS",
     "assert_suites",
     "broker_for_integration_suites",
@@ -107,6 +108,7 @@ eunit(
         ":test_src_rabbit_stomp_client_beam",
         ":test_src_rabbit_stomp_publish_test_beam",
     ],
+    erl_extra_args = [ENABLE_FEATURE_MAYBE_EXPR],
     target = ":test_erlang_app",
 )
 
