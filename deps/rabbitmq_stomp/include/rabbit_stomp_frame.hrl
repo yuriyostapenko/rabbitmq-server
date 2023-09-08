@@ -5,4 +5,4 @@
 %% Copyright (c) 2020-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
--record(stomp_frame, {command, headers, body_iolist}).
+-record(stomp_frame, {command, headers, body_iolist_rev}).
