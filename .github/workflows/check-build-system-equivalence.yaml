@@ -129,6 +129,8 @@ jobs:
       uses: actions/download-artifact@v3
       with:
         name: make-package-generic-unix.tar.xz
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
     - name: EXPAND & COMPARE
       run: |
         mkdir bazel
