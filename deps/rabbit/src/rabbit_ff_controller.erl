@@ -36,7 +36,7 @@
 -export([is_supported/1, is_supported/2,
          enable/1,
          enable_default/0,
-         check_node_compatibility/1,
+         check_node_compatibility/2,
          sync_cluster/1,
          refresh_after_app_load/0,
          get_forced_feature_flag_names/0]).
@@ -127,12 +127,22 @@ enable_default() ->
             Ret
     end.
 
-check_node_compatibility(RemoteNode) ->
+check_node_compatibility(RemoteNode, LocalNodeAsVirgin) ->
     ThisNode = node(),
-    ?LOG_DEBUG(
-       "Feature flags: CHECKING COMPATIBILITY between nodes `~ts` and `~ts`",
-       [ThisNode, RemoteNode],
-       #{domain => ?RMQLOG_DOMAIN_FEAT_FLAGS}),
+    case LocalNodeAsVirgin of
+        true ->
+            ?LOG_DEBUG(
+               "Feature flags: CHECKING COMPATIBILITY between nodes `~ts` "
+               "and `~ts`; consider node `~ts` as virgin",
+               [ThisNode, RemoteNode, ThisNode],
+               #{domain => ?RMQLOG_DOMAIN_FEAT_FLAGS});
+        false ->
+            ?LOG_DEBUG(
+               "Feature flags: CHECKING COMPATIBILITY between nodes `~ts` "
+               "and `~ts`",
+               [ThisNode, RemoteNode],
+               #{domain => ?RMQLOG_DOMAIN_FEAT_FLAGS})
+    end,
     %% We don't go through the controller process to check nodes compatibility
     %% because this function is used while `rabbit' is stopped usually.
     %%
@@ -140,7 +150,7 @@ check_node_compatibility(RemoteNode) ->
     %% because it would not guaranty that the compatibility remains true after
     %% this function finishes and before the node starts and synchronizes
     %% feature flags.
-    check_node_compatibility_task(ThisNode, RemoteNode).
+    check_node_compatibility_task(ThisNode, RemoteNode, LocalNodeAsVirgin).
 
 sync_cluster(Nodes) ->
     ?LOG_DEBUG(
@@ -363,12 +373,14 @@ notify_waiting_controller({ControlerPid, _} = From) ->
 %% Code to check compatibility between nodes.
 %% --------------------------------------------------------------------
 
--spec check_node_compatibility_task(Node, Node) -> Ret when
-      Node :: node(),
+-spec check_node_compatibility_task(NodeA, NodeB, NodeAAsVirigin) -> Ret when
+      NodeA :: node(),
+      NodeB :: node(),
+      NodeAAsVirigin :: boolean(),
       Ret :: ok | {error, Reason},
       Reason :: incompatible_feature_flags.
 
-check_node_compatibility_task(NodeA, NodeB) ->
+check_node_compatibility_task(NodeA, NodeB, NodeAAsVirigin) ->
     ?LOG_NOTICE(
        "Feature flags: checking nodes `~ts` and `~ts` compatibility...",
        [NodeA, NodeB],
@@ -381,7 +393,8 @@ check_node_compatibility_task(NodeA, NodeB) ->
                 _ when is_list(NodesB) ->
                     check_node_compatibility_task1(
                       NodeA, NodesA,
-                      NodeB, NodesB);
+                      NodeB, NodesB,
+                      NodeAAsVirigin);
                 Error ->
                     ?LOG_WARNING(
                        "Feature flags: "
@@ -400,10 +413,12 @@ check_node_compatibility_task(NodeA, NodeB) ->
             {error, {aborted_feature_flags_compat_check, Error}}
     end.
 
-check_node_compatibility_task1(NodeA, NodesA, NodeB, NodesB)
+check_node_compatibility_task1(NodeA, NodesA, NodeB, NodesB, NodeAAsVirigin)
   when is_list(NodesA) andalso is_list(NodesB) ->
     case collect_inventory_on_nodes(NodesA) of
-        {ok, InventoryA} ->
+        {ok, InventoryA0} ->
+            InventoryA = virtually_reset_inventory(
+                           InventoryA0, NodeAAsVirigin),
             ?LOG_DEBUG(
                "Feature flags: inventory of node `~ts`:~n~tp",
                [NodeA, InventoryA],
@@ -468,6 +483,34 @@ list_nodes_clustered_with(Node) ->
         []          -> [Node];
         ListOrError -> ListOrError
     end.
+
+virtually_reset_inventory(
+  #{feature_flags := FeatureFlags,
+    states_per_node := StatesPerNode} = Inventory,
+  true = _NodeAsVirgin) ->
+    [Node | _] = maps:keys(StatesPerNode),
+    FeatureStates0 = maps:get(Node, StatesPerNode),
+    FeatureStates1 = maps:map(
+                       fun(FeatureName, _FeatureState) ->
+                               FeatureProps = maps:get(
+                                                FeatureName, FeatureFlags),
+                               Stability = rabbit_feature_flags:get_stability(
+                                             FeatureProps),
+                               case Stability of
+                                   required -> true;
+                                   _        -> false
+                               end
+                       end, FeatureStates0),
+    StatesPerNode1 = maps:map(
+                       fun(_Node, _FeatureStates) ->
+                               FeatureStates1
+                       end, StatesPerNode),
+    Inventory1 = Inventory#{states_per_node => StatesPerNode1},
+    Inventory1;
+virtually_reset_inventory(
+  Inventory,
+  false = _NodeAsVirgin) ->
+    Inventory.
 
 -spec are_compatible(Inventory, Inventory) -> AreCompatible when
       Inventory :: rabbit_feature_flags:cluster_inventory(),
