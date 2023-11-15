@@ -12,7 +12,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ForceStandaloneKhepriBootCommand do
   use RabbitMQ.CLI.Core.MergesNoDefaults
   use RabbitMQ.CLI.Core.AcceptsNoPositionalArguments
 
-  def run([], %{node: node_name} = opts) do
+  def run([], %{node: node_name}) do
     ret =
       :rabbit_misc.rpc_call(node_name, :rabbit_khepri, :force_shrink_member_to_current_member, [])
 

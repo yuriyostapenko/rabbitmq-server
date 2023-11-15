@@ -38,7 +38,7 @@ defmodule RabbitMQ.CLI.Diagnostics.Commands.RemoteShellCommand do
     case :shell.start_interactive({node_name, {:shell, :start, []}}) do
       :ok -> :ok
       {:error, :already_started} -> :ok
-      {error, _} -> {:error, {:badrpc, :nodedown}}
+      {_error, _} -> {:error, {:badrpc, :nodedown}}
     end
 
     :timer.sleep(:infinity)

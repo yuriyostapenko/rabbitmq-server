@@ -100,16 +100,6 @@ defmodule RabbitMQ.CLI.Diagnostics.Commands.CheckIfAnyDeprecatedFeaturesAreUsedC
   def description(),
     do: "Generate a report listing all deprecated features in use"
 
-  def banner(_, %{node: node_name}), do: "Checking if any deprecated features are used ..."
+  def banner(_, %{}), do: "Checking if any deprecated features are used ..."
 
-  #
-  # Implementation
-  #
-
-  defp run_command(command, args, opts) do
-    {args, opts} = command.merge_defaults(args, opts)
-    banner = command.banner(args, opts)
-    command_result = command.run(args, opts) |> command.output(opts)
-    {command, banner, command_result}
-  end
 end
