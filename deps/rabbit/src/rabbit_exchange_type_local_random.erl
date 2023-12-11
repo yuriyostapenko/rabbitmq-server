@@ -83,7 +83,7 @@ assert_args_equivalence(X, Args) ->
 filter_local_queue(QName) ->
   {ok, Q} = rabbit_amqqueue:lookup(QName),
   case amqqueue:get_pid(Q) of
-      undefined ->
+      none ->
           false;
       Pid when is_pid(Pid) ->
           node(Pid) =:= node()
