@@ -46,7 +46,7 @@ route(#exchange{name = Name}, _Msg, _Opts) ->
             One;
         LocalMatches ->
             Rand = rand:uniform(length(LocalMatches)),
-            lists:nth(Rand, LocalMatches)
+            [lists:nth(Rand, LocalMatches)]
     end.
 
 info(_X) -> [].
