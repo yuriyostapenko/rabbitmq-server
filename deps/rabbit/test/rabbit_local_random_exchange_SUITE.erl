@@ -22,7 +22,7 @@ groups() ->
     [
      {non_parallel_tests, [], [
                                routed_to_one_local_queue_test,
-                               routed_to_one_nonlocal_queue_test
+                               no_route
                               ]}
     ].
 
@@ -85,7 +85,7 @@ routed_to_one_local_queue_test(Config) ->
     delete_exchange_and_queues(Config, E, QueueNames),
     ok.
 
-routed_to_one_nonlocal_queue_test(Config) ->
+no_route(Config) ->
 
     E = make_exchange_name(Config, "0"),
     declare_exchange(Config, E),
