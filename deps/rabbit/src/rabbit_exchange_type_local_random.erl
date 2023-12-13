@@ -81,10 +81,15 @@ assert_args_equivalence(X, Args) ->
     rabbit_exchange:assert_args_equivalence(X, Args).
 
 filter_local_queue(QName) ->
-  {ok, Q} = rabbit_amqqueue:lookup(QName),
-  case amqqueue:get_pid(Q) of
-      none ->
-          false;
-      Pid when is_pid(Pid) ->
-          node(Pid) =:= node()
-  end.
+    case rabbit_amqqueue:lookup(QName) of
+        {ok, Q} ->
+            case amqqueue:get_pid(Q) of
+                Pid when is_pid(Pid) andalso
+                         node(Pid) =:= node() ->
+                    is_process_alive(Pid);
+                _ ->
+                    false
+            end;
+        _ ->
+            false
+    end.
