@@ -38,7 +38,7 @@ description() ->
      {description, <<"Picks one random local binding (queue) to route via (to).">>}].
 
 route(#exchange{name = Name}, _Msg, _Opts) ->
-    Matches = rabbit_router:match_routing_key(Name, ['_']),
+    Matches = rabbit_router:match_routing_key(Name, [<<>>]),
     case lists:filter(fun filter_local_queue/1, Matches) of
         [] ->
             [];
@@ -59,8 +59,9 @@ delete(_Serial, _X) -> ok.
 policy_changed(_X1, _X2) -> ok.
 add_binding(_Serial, _X, _B) -> ok.
 remove_bindings(_Serial, _X, _Bs) -> ok.
-validate_binding(_X, #binding{destination = Dest}) ->
-    %% check destination is a classic queue
+
+validate_binding(_X, #binding{destination = Dest,
+                              key = <<>>}) ->
     case rabbit_amqqueue:lookup(Dest) of
         {ok, Q} ->
             case amqqueue:get_type(Q) of
@@ -75,12 +76,17 @@ validate_binding(_X, #binding{destination = Dest}) ->
             {error, {binding_invalid,
                      "Destination not found",
                      []}}
-    end.
+    end;
+validate_binding(_X, #binding{key = BKey}) ->
+    {error, {binding_invalid,
+             "Non empty binding '~s' key not permitted",
+             [BKey]}}.
 
 assert_args_equivalence(X, Args) ->
     rabbit_exchange:assert_args_equivalence(X, Args).
 
 filter_local_queue(QName) ->
+    %% TODO: introduce lookup function that _only_ gets the pid
     case rabbit_amqqueue:lookup(QName) of
         {ok, Q} ->
             case amqqueue:get_pid(Q) of
