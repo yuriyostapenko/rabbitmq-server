@@ -75,6 +75,24 @@
           settled :: boolean()
          }).
 
+%% For AMQP management operations, we require a link pair as described in
+%% https://docs.oasis-open.org/amqp/linkpair/v1.0/cs01/linkpair-v1.0-cs01.html
+-record(management_link_pair, {
+          client_terminus_address,
+          incoming_half :: unattached | link_handle(),
+          outgoing_half :: unattached | link_handle()
+         }).
+
+%% Incoming or outgoing half of the link pair.
+-record(management_link, {
+          name :: binary(),
+          delivery_count :: sequence_no(),
+          %% Credit on an incoming management link is always 1 since management
+          %% requests are synchronous and we grant 1 credit when sending a response.
+          credit :: non_neg_integer(),
+          max_message_size :: unlimited | pos_integer()
+         }).
+
 -record(incoming_link, {
           exchange :: rabbit_types:exchange() | rabbit_exchange:name(),
           routing_key :: undefined | rabbit_types:routing_key(),
@@ -107,8 +125,7 @@
           %% The queue sent us this consumer scoped sequence number.
           msg_id :: rabbit_amqqueue:msg_id(),
           consumer_tag :: rabbit_types:ctag(),
-          queue_name :: rabbit_amqqueue:name(),
-          delivered_at :: integer()
+          queue_name :: rabbit_amqqueue:name()
          }).
 
 -record(pending_transfer, {
@@ -116,6 +133,10 @@
           queue_ack_required :: boolean(),
           delivery_id :: delivery_number(),
           outgoing_unsettled :: #outgoing_unsettled{}
+         }).
+
+-record(pending_management_transfer, {
+          frames :: iolist()
          }).
 
 -record(cfg, {
@@ -190,7 +211,9 @@
           %% Even when we are limited by session flow control, we must make sure to first send the TRANSFER to the
           %% client (once the remote_incoming_window got opened) followed by the FLOW with drain=true and credit=0
           %% and advanced delivery count. Otherwise, we would violate the AMQP protocol spec.
-          outgoing_pending = queue:new() :: queue:queue(#pending_transfer{} | #'v1_0.flow'{}),
+          outgoing_pending = queue:new() :: queue:queue(#pending_transfer{} |
+                                                        #pending_management_transfer{} |
+                                                        #'v1_0.flow'{}),
 
           %% The link or session endpoint assigns each message a unique delivery-id
           %% from a session scoped sequence number.
@@ -212,6 +235,10 @@
           %% We send messages to clients on outgoing links.
           outgoing_links = #{} :: #{link_handle() => #outgoing_link{}},
 
+          management_link_pairs = #{} :: #{LinkName :: binary() => #management_link_pair{}},
+          incoming_management_links = #{} :: #{link_handle() => #management_link{}},
+          outgoing_management_links = #{} :: #{link_handle() => #management_link{}},
+
           %% TRANSFER delivery IDs published to consuming clients but not yet acknowledged by clients.
           outgoing_unsettled_map = #{} :: #{delivery_number() => #outgoing_unsettled{}},
 
@@ -226,6 +253,8 @@
 
           queue_states = rabbit_queue_type:init() :: rabbit_queue_type:state()
          }).
+
+-type state() :: #state{}.
 
 start_link(ReaderPid, WriterPid, ChannelNum, FrameMax, User, Vhost, ConnName, BeginFrame) ->
     Args = {ReaderPid, WriterPid, ChannelNum, FrameMax, User, Vhost, ConnName, BeginFrame},
@@ -694,15 +723,130 @@ disposition(DeliveryState, First, Last) ->
                     ?UINT(Last)
             end,
     #'v1_0.disposition'{
-       role = ?RECV_ROLE,
+       role = ?AMQP_ROLE_RECEIVER,
        settled = true,
        state = DeliveryState,
        first = ?UINT(First),
        last = Last1}.
 
-handle_control(#'v1_0.attach'{role = ?SEND_ROLE,
+handle_control(#'v1_0.attach'{
+                  role = ?AMQP_ROLE_SENDER,
+                  snd_settle_mode = SndSettleMode,
+                  name = Name = {utf8, LinkName},
+                  handle = Handle = ?UINT(HandleInt),
+                  source = Source = #'v1_0.source'{address = ClientTerminusAddress},
+                  target = Target = #'v1_0.target'{address = {utf8, <<"$management">>}},
+                  initial_delivery_count = DeliveryCount = ?UINT(DeliveryCountInt),
+                  properties = Properties
+                 } = Attach,
+               #state{management_link_pairs = Pairs0,
+                      incoming_management_links = Links
+                     } = State0) ->
+    ok = validate_attach(Attach),
+    ok = check_paired(Properties),
+    Pairs = case Pairs0 of
+                #{LinkName := #management_link_pair{
+                                 client_terminus_address = ClientTerminusAddress,
+                                 incoming_half = unattached,
+                                 outgoing_half = H} = Pair}
+                  when is_integer(H) ->
+                    maps:update(LinkName,
+                                Pair#management_link_pair{incoming_half = HandleInt},
+                                Pairs0);
+                #{LinkName := Other} ->
+                    protocol_error(?V_1_0_AMQP_ERROR_PRECONDITION_FAILED,
+                                   "received invalid attach ~p for management link pair ~p",
+                                   [Attach, Other]);
+                _ ->
+                    maps:put(LinkName,
+                             #management_link_pair{client_terminus_address = ClientTerminusAddress,
+                                                   incoming_half = HandleInt,
+                                                   outgoing_half = unattached},
+                             Pairs0)
+            end,
+    Credit = 1,
+    MaxMessageSize = persistent_term:get(max_message_size),
+    Link = #management_link{name = LinkName,
+                            delivery_count = DeliveryCountInt,
+                            credit = Credit,
+                            max_message_size = MaxMessageSize},
+    State = State0#state{management_link_pairs = Pairs,
+                         incoming_management_links = maps:put(HandleInt, Link, Links)},
+    Reply = #'v1_0.attach'{
+               name = Name,
+               handle = Handle,
+               %% We are the receiver.
+               role = ?AMQP_ROLE_RECEIVER,
+               snd_settle_mode = SndSettleMode,
+               rcv_settle_mode = ?V_1_0_RECEIVER_SETTLE_MODE_FIRST,
+               source = Source,
+               target = Target,
+               max_message_size = {ulong, MaxMessageSize},
+               properties = Properties},
+    Flow = #'v1_0.flow'{handle = Handle,
+                        delivery_count = DeliveryCount,
+                        link_credit = ?UINT(Credit)},
+    reply0([Reply, Flow], State);
+
+handle_control(#'v1_0.attach'{
+                  role = ?AMQP_ROLE_RECEIVER,
+                  name = Name = {utf8, LinkName},
+                  handle = Handle = ?UINT(HandleInt),
+                  source = Source = #'v1_0.source'{address = {utf8, <<"$management">>}},
+                  target = Target = #'v1_0.target'{address = ClientTerminusAddress},
+                  rcv_settle_mode = RcvSettleMode,
+                  max_message_size = MaybeMaxMessageSize,
+                  properties = Properties
+                 } = Attach,
+               #state{management_link_pairs = Pairs0,
+                      outgoing_management_links = Links
+                     } = State0) ->
+    ok = validate_attach(Attach),
+    ok = check_paired(Properties),
+    Pairs = case Pairs0 of
+                #{LinkName := #management_link_pair{
+                                 client_terminus_address = ClientTerminusAddress,
+                                 incoming_half = H,
+                                 outgoing_half = unattached} = Pair}
+                  when is_integer(H) ->
+                    maps:update(LinkName,
+                                Pair#management_link_pair{outgoing_half = HandleInt},
+                                Pairs0);
+                #{LinkName := Other} ->
+                    protocol_error(?V_1_0_AMQP_ERROR_PRECONDITION_FAILED,
+                                   "received invalid attach ~p for management link pair ~p",
+                                   [Attach, Other]);
+                _ ->
+                    maps:put(LinkName,
+                             #management_link_pair{client_terminus_address = ClientTerminusAddress,
+                                                   incoming_half = unattached,
+                                                   outgoing_half = HandleInt},
+                             Pairs0)
+            end,
+    MaxMessageSize = max_message_size(MaybeMaxMessageSize),
+    Link = #management_link{name = LinkName,
+                            delivery_count = ?INITIAL_DELIVERY_COUNT,
+                            credit = 0,
+                            max_message_size = MaxMessageSize},
+    State = State0#state{management_link_pairs = Pairs,
+                         outgoing_management_links = maps:put(HandleInt, Link, Links)},
+    Reply = #'v1_0.attach'{
+               name = Name,
+               handle = Handle,
+               role = ?AMQP_ROLE_SENDER,
+               snd_settle_mode = ?V_1_0_SENDER_SETTLE_MODE_SETTLED,
+               rcv_settle_mode = RcvSettleMode,
+               source = Source,
+               target = Target,
+               initial_delivery_count = ?UINT(?INITIAL_DELIVERY_COUNT),
+               %% Echo back that we will respect the client's requested max-message-size.
+               max_message_size = MaybeMaxMessageSize,
+               properties = Properties},
+    reply0(Reply, State);
+
+handle_control(#'v1_0.attach'{role = ?AMQP_ROLE_SENDER,
                               name = LinkName,
-                              handle = InputHandle = ?UINT(HandleInt),
+                              handle = Handle = ?UINT(HandleInt),
                               source = Source,
                               snd_settle_mode = SndSettleMode,
                               target = Target,
@@ -721,21 +865,20 @@ handle_control(#'v1_0.attach'{role = ?SEND_ROLE,
                               delivery_count = DeliveryCountInt,
                               credit = ?LINK_CREDIT_RCV},
             _Outcomes = outcomes(Source),
-            OutputHandle = output_handle(InputHandle),
             Reply = #'v1_0.attach'{
                        name = LinkName,
-                       handle = OutputHandle,
+                       handle = Handle,
                        source = Source,
                        snd_settle_mode = SndSettleMode,
                        rcv_settle_mode = ?V_1_0_RECEIVER_SETTLE_MODE_FIRST,
                        target = Target,
                        %% We are the receiver.
-                       role = ?RECV_ROLE,
+                       role = ?AMQP_ROLE_RECEIVER,
                        max_message_size = {ulong, persistent_term:get(max_message_size)}},
-            Flow = #'v1_0.flow'{handle = OutputHandle,
+            Flow = #'v1_0.flow'{handle = Handle,
                                 delivery_count = DeliveryCount,
                                 link_credit = ?UINT(?LINK_CREDIT_RCV)},
-            %%TODO check that handle is not present in either incoming_links or outgoing_links:
+            %%TODO check that handle is not in use for any other open links.
             %%"The handle MUST NOT be used for other open links. An attempt to attach
             %% using a handle which is already associated with a link MUST be responded to
             %% with an immediate close carrying a handle-in-use session-error."
@@ -750,9 +893,9 @@ handle_control(#'v1_0.attach'{role = ?SEND_ROLE,
                            [Reason])
     end;
 
-handle_control(#'v1_0.attach'{role = ?RECV_ROLE,
+handle_control(#'v1_0.attach'{role = ?AMQP_ROLE_RECEIVER,
                               name = LinkName,
-                              handle = InputHandle = ?UINT(HandleInt),
+                              handle = Handle = ?UINT(HandleInt),
                               source = Source,
                               snd_settle_mode = SndSettleMode,
                               rcv_settle_mode = RcvSettleMode,
@@ -820,10 +963,9 @@ handle_control(#'v1_0.attach'{role = ?RECV_ROLE,
                                     acting_user => Username},
                            case rabbit_queue_type:consume(Q, Spec, QStates0) of
                                {ok, QStates} ->
-                                   OutputHandle = output_handle(InputHandle),
                                    A = #'v1_0.attach'{
                                           name = LinkName,
-                                          handle = OutputHandle,
+                                          handle = Handle,
                                           initial_delivery_count = ?UINT(?INITIAL_DELIVERY_COUNT),
                                           snd_settle_mode = EffectiveSndSettleMode,
                                           rcv_settle_mode = RcvSettleMode,
@@ -833,26 +975,15 @@ handle_control(#'v1_0.attach'{role = ?RECV_ROLE,
                                           source = Source#'v1_0.source'{
                                                             default_outcome = #'v1_0.released'{},
                                                             outcomes = outcomes(Source)},
-                                          role = ?SEND_ROLE,
+                                          role = ?AMQP_ROLE_SENDER,
                                           %% Echo back that we will respect the client's requested max-message-size.
                                           max_message_size = MaybeMaxMessageSize},
-                                   MaxMessageSize = case MaybeMaxMessageSize of
-                                                        {ulong, Size} when Size > 0 ->
-                                                            Size;
-                                                        _ ->
-                                                            %% "If this field is zero or unset, there is no
-                                                            %% maximum size imposed by the link endpoint."
-                                                            unlimited
-                                                    end,
+                                   MaxMessageSize = max_message_size(MaybeMaxMessageSize),
                                    Link = #outgoing_link{queue_name_bin = QNameBin,
                                                          queue_type = QType,
                                                          send_settled = SndSettled,
                                                          max_message_size = MaxMessageSize,
                                                          delivery_count = DeliveryCount},
-                                   %%TODO check that handle is not present in either incoming_links or outgoing_links:
-                                   %%"The handle MUST NOT be used for other open links. An attempt to attach
-                                   %% using a handle which is already associated with a link MUST be responded to
-                                   %% with an immediate close carrying a handle-in-use session-error."
                                    OutgoingLinks = OutgoingLinks0#{HandleInt => Link},
                                    State1 = State0#state{queue_states = QStates,
                                                          outgoing_links = OutgoingLinks},
@@ -881,26 +1012,25 @@ handle_control(#'v1_0.attach'{role = ?RECV_ROLE,
 
 handle_control({Txfr = #'v1_0.transfer'{handle = ?UINT(Handle)}, MsgPart},
                State0 = #state{incoming_links = IncomingLinks}) ->
+    {Flows, State1} = session_flow_control_received_transfer(State0),
+
+    {Reply, State} =
     case IncomingLinks of
         #{Handle := Link0} ->
-            {Flows, State1} = session_flow_control_received_transfer(State0),
-           case incoming_link_transfer(Txfr, MsgPart, Link0, State1) of
+            case incoming_link_transfer(Txfr, MsgPart, Link0, State1) of
                 {ok, Reply0, Link, State2} ->
-                    Reply = Reply0 ++ Flows,
-                    State = State2#state{incoming_links = maps:update(Handle, Link, IncomingLinks)},
-                    reply0(Reply, State);
+                    {Reply0, State2#state{incoming_links = IncomingLinks#{Handle := Link}}};
                 {error, Reply0} ->
                     %% "When an error occurs at a link endpoint, the endpoint MUST be detached
                     %% with appropriate error information supplied in the error field of the
                     %% detach frame. The link endpoint MUST then be destroyed." [2.6.5]
-                    Reply = Reply0 ++ Flows,
-                    State = State1#state{incoming_links = maps:remove(Handle, IncomingLinks)},
-                    reply0(Reply, State)
+                    {Reply0, State1#state{incoming_links = maps:remove(Handle, IncomingLinks)}}
             end;
         _ ->
-            protocol_error(?V_1_0_AMQP_ERROR_ILLEGAL_STATE,
-                           "Unknown link handle: ~p", [Handle])
-    end;
+            incoming_mgmt_link_transfer(Txfr, MsgPart, State1)
+    end,
+    reply0(Reply ++ Flows, State);
+
 
 %% Although the AMQP message format [3.2] requires a body, it is valid to send a transfer frame without payload.
 %% For example, when a large multi transfer message is streamed using the ProtonJ2 client, the client could send
@@ -913,37 +1043,43 @@ handle_control(Txfr = #'v1_0.transfer'{}, State) ->
 %% We'll deal with each of them separately.
 handle_control(#'v1_0.flow'{handle = Handle} = Flow,
                #state{incoming_links = IncomingLinks,
-                      outgoing_links = OutgoingLinks} = State0) ->
+                      outgoing_links = OutgoingLinks,
+                      incoming_management_links = IncomingMgmtLinks,
+                      outgoing_management_links = OutgoingMgmtLinks
+                     } = State0) ->
     State = session_flow_control_received_flow(Flow, State0),
-    case Handle of
-        undefined ->
-            %% "If not set, the flow frame is carrying only information
-            %% pertaining to the session endpoint." [2.7.4]
-            {noreply, State};
-        ?UINT(HandleInt) ->
-            %% "If set, indicates that the flow frame carries flow state information
-            %% for the local link endpoint associated with the given handle." [2.7.4]
-            case OutgoingLinks of
-                #{HandleInt := OutgoingLink} ->
-                    {noreply, handle_outgoing_link_flow_control(OutgoingLink, Flow, State)};
-                _ ->
-                    case IncomingLinks of
-                        #{HandleInt := _IncomingLink} ->
-                            %% We're being told about available messages at
-                            %% the sender.  Yawn. TODO at least check transfer-count?
-                            {noreply, State};
-                        _ ->
-                            %% "If set to a handle that is not currently associated with
-                            %% an attached link, the recipient MUST respond by ending the
-                            %% session with an unattached-handle session error." [2.7.4]
-                            rabbit_log:warning(
-                              "Received Flow frame for unknown link handle: ~tp", [Flow]),
-                            protocol_error(
-                              ?V_1_0_SESSION_ERROR_UNATTACHED_HANDLE,
-                              "Unattached link handle: ~b", [HandleInt])
-                    end
-            end
-    end;
+    S = case Handle of
+            undefined ->
+                %% "If not set, the flow frame is carrying only information
+                %% pertaining to the session endpoint." [2.7.4]
+                State;
+            ?UINT(HandleInt) ->
+                %% "If set, indicates that the flow frame carries flow state information
+                %% for the local link endpoint associated with the given handle." [2.7.4]
+                case OutgoingLinks of
+                    #{HandleInt := OutgoingLink} ->
+                        handle_outgoing_link_flow_control(OutgoingLink, Flow, State);
+                    _ ->
+                        case OutgoingMgmtLinks of
+                            #{HandleInt := OutgoingMgmtLink} ->
+                                handle_outgoing_mgmt_link_flow_control(OutgoingMgmtLink, Flow, State);
+                            _ when is_map_key(HandleInt, IncomingLinks) orelse
+                                   is_map_key(HandleInt, IncomingMgmtLinks) ->
+                                %% We're being told about available messages at the sender.
+                                State;
+                            _ ->
+                                %% "If set to a handle that is not currently associated with
+                                %% an attached link, the recipient MUST respond by ending the
+                                %% session with an unattached-handle session error." [2.7.4]
+                                rabbit_log:warning(
+                                  "Received Flow frame for unknown link handle: ~tp", [Flow]),
+                                protocol_error(
+                                  ?V_1_0_SESSION_ERROR_UNATTACHED_HANDLE,
+                                  "Unattached link handle: ~b", [HandleInt])
+                        end
+                end
+        end,
+    {noreply, S};
 
 handle_control(Detach = #'v1_0.detach'{handle = ?UINT(HandleInt)},
                State0 = #state{queue_states = QStates0,
@@ -1004,10 +1140,11 @@ handle_control(Detach = #'v1_0.detach'{handle = ?UINT(HandleInt)},
               {Unsettled1, _RemovedMsgIds} = remove_link_from_outgoing_unsettled_map(Ctag, Unsettled0),
               {QStates0, Unsettled1, OutgoingLinks0}
       end,
-    State = State0#state{queue_states = QStates,
-                         incoming_links = maps:remove(HandleInt, IncomingLinks),
-                         outgoing_links = OutgoingLinks,
-                         outgoing_unsettled_map = Unsettled},
+    State1 = State0#state{queue_states = QStates,
+                          incoming_links = maps:remove(HandleInt, IncomingLinks),
+                          outgoing_links = OutgoingLinks,
+                          outgoing_unsettled_map = Unsettled},
+    State = maybe_detach_mgmt_link(HandleInt, State1),
     maybe_detach_reply(Detach, State, State0),
     publisher_or_consumer_deleted(State, State0),
     {noreply, State};
@@ -1026,7 +1163,7 @@ handle_control(#'v1_0.end'{},
          end,
     {stop, normal, State};
 
-handle_control(#'v1_0.disposition'{role = ?RECV_ROLE,
+handle_control(#'v1_0.disposition'{role = ?AMQP_ROLE_RECEIVER,
                                    first = ?UINT(First),
                                    last = Last0,
                                    state = Outcome,
@@ -1093,7 +1230,7 @@ handle_control(#'v1_0.disposition'{role = ?RECV_ROLE,
             Reply = case DispositionSettled of
                         true  -> [];
                         false -> [Disposition#'v1_0.disposition'{settled = true,
-                                                                 role = ?SEND_ROLE}]
+                                                                 role = ?AMQP_ROLE_SENDER}]
                     end,
             State = handle_queue_actions(Actions, State1),
             reply0(Reply, State)
@@ -1118,31 +1255,42 @@ send_pending(#state{remote_incoming_window = Space,
         {{value, #pending_transfer{frames = Frames} = Pending}, Buf1}
           when Space > 0 ->
             {NumTransfersSent, Buf, State1} =
-                case send_frames(WriterPid, Ch, Frames, Space) of
-                    {all, SpaceLeft} ->
-                        {Space - SpaceLeft,
-                         Buf1,
-                         record_outgoing_unsettled(Pending, State0)};
-                    {some, Rest} ->
-                        {Space,
-                         queue:in_r(Pending#pending_transfer{frames = Rest}, Buf1),
-                         State0}
-                end,
+            case send_frames(WriterPid, Ch, Frames, Space) of
+                {sent_all, SpaceLeft} ->
+                    {Space - SpaceLeft,
+                     Buf1,
+                     record_outgoing_unsettled(Pending, State0)};
+                {sent_some, Rest} ->
+                    {Space,
+                     queue:in_r(Pending#pending_transfer{frames = Rest}, Buf1),
+                     State0}
+            end,
             State2 = session_flow_control_sent_transfers(NumTransfersSent, State1),
             State = State2#state{outgoing_pending = Buf},
             send_pending(State);
-        {{value, #pending_transfer{}}, _}
-          when Space =:= 0 ->
+        {{value, Pending = #pending_management_transfer{frames = Frames}}, Buf1}
+          when Space > 0 ->
+            {NumTransfersSent, Buf} =
+            case send_frames(WriterPid, Ch, Frames, Space) of
+                {sent_all, SpaceLeft} ->
+                    {Space - SpaceLeft, Buf1};
+                {sent_some, Rest} ->
+                    {Space, queue:in_r(Pending#pending_management_transfer{frames = Rest}, Buf1)}
+            end,
+            State1 = session_flow_control_sent_transfers(NumTransfersSent, State0),
+            State = State1#state{outgoing_pending = Buf},
+            send_pending(State);
+        _ when Space =:= 0 ->
             State0
     end.
 
-send_frames(_, _, [], Left) ->
-    {all, Left};
+send_frames(_, _, [], SpaceLeft) ->
+    {sent_all, SpaceLeft};
 send_frames(_, _, Rest, 0) ->
-    {some, Rest};
-send_frames(Writer, Ch, [[Transfer, Sections] | Rest], Left) ->
+    {sent_some, Rest};
+send_frames(Writer, Ch, [[Transfer, Sections] | Rest], SpaceLeft) ->
     rabbit_amqp_writer:send_command(Writer, Ch, Transfer, Sections),
-    send_frames(Writer, Ch, Rest, Left - 1).
+    send_frames(Writer, Ch, Rest, SpaceLeft - 1).
 
 record_outgoing_unsettled(#pending_transfer{queue_ack_required = true,
                                             delivery_id = DeliveryId,
@@ -1244,10 +1392,15 @@ settle_op_from_outcome(Outcome) ->
       "Unrecognised state: ~tp in DISPOSITION",
       [Outcome]).
 
+-spec flow({uint, link_handle()}, sequence_no()) -> #'v1_0.flow'{}.
 flow(Handle, DeliveryCount) ->
+    flow(Handle, DeliveryCount, ?LINK_CREDIT_RCV).
+
+-spec flow({uint, link_handle()}, sequence_no(), non_neg_integer()) -> #'v1_0.flow'{}.
+flow(Handle, DeliveryCount, LinkCredit) ->
     #'v1_0.flow'{handle = Handle,
                  delivery_count = ?UINT(DeliveryCount),
-                 link_credit = ?UINT(?LINK_CREDIT_RCV)}.
+                 link_credit = ?UINT(LinkCredit)}.
 
 session_flow_fields(Frames, State)
   when is_list(Frames) ->
@@ -1398,7 +1551,7 @@ handle_deliver(ConsumerTag, AckRequired,
                           handle = ?UINT(Handle),
                           delivery_id = ?UINT(DeliveryId),
                           delivery_tag = {binary, Dtag},
-                          message_format = ?UINT(0), % [3.2.16]
+                          message_format = ?UINT(?MESSAGE_FORMAT),
                           settled = SendSettled},
             Mc1 = mc:convert(mc_amqp, Mc0),
             Mc = mc:set_annotation(redelivered, Redelivered, Mc1),
@@ -1408,14 +1561,7 @@ handle_deliver(ConsumerTag, AckRequired,
                    [?MODULE, [amqp10_framing:pprint(Section) ||
                               Section <- amqp10_framing:decode_bin(iolist_to_binary(Sections))]]),
             validate_message_size(Sections, MaxMessageSize),
-            Frames = case MaxFrameSize of
-                         unlimited ->
-                             [[Transfer, Sections]];
-                         _ ->
-                             %% TODO Ugh
-                             TLen = iolist_size(amqp10_framing:encode_bin(Transfer)),
-                             encode_frames(Transfer, Sections, MaxFrameSize - TLen, [])
-                     end,
+            Frames = transfer_frames(Transfer, Sections, MaxFrameSize),
             messages_delivered(Redelivered, QType),
             rabbit_trace:tap_out(Msg, ConnName, ChannelNum, Username, Trace),
             OutgoingLinks = case DelCount of
@@ -1428,11 +1574,7 @@ handle_deliver(ConsumerTag, AckRequired,
             Del = #outgoing_unsettled{
                      msg_id = MsgId,
                      consumer_tag = ConsumerTag,
-                     queue_name = QName,
-                     %% The consumer timeout interval starts already from the point in time the
-                     %% queue sent us the message so that the Ra log can be truncated even if
-                     %% the message is sitting here for a long time.
-                     delivered_at = os:system_time(millisecond)},
+                     queue_name = QName},
             PendingTransfer = #pending_transfer{
                                  frames = Frames,
                                  queue_ack_required = AckRequired,
@@ -1478,6 +1620,92 @@ delivery_tag(MsgId = {Priority, Seq}, _)
 %%%%%%%%%%%%%%%%%%%%%
 %%% Incoming Link %%%
 %%%%%%%%%%%%%%%%%%%%%
+
+incoming_mgmt_link_transfer(
+  #'v1_0.transfer'{
+     %%TODO confirm or reject incoming message if incoming settled=false
+     delivery_id = _MaybeIncomingDeliveryId,
+     settled = MaybeSettled,
+     %% In the current implementation, we disallow large incoming management request messages.
+     more = false,
+     rcv_settle_mode = RcvSettleMode,
+     handle = IncomingHandle = ?UINT(IncomingHandleInt)},
+  Request,
+  #state{management_link_pairs = LinkPairs,
+         incoming_management_links = IncomingLinks,
+         outgoing_management_links = OutgoingLinks,
+         outgoing_pending = Pending,
+         outgoing_delivery_id = OutgoingDeliveryId,
+         cfg = #cfg{outgoing_max_frame_size = MaxFrameSize,
+                    vhost = Vhost,
+                    user = User,
+                    reader_pid = ReaderPid}
+        } = State0) ->
+
+    IncomingLink0 = case maps:find(IncomingHandleInt, IncomingLinks) of
+                        {ok, Link} ->
+                            Link;
+                        error ->
+                            protocol_error(?V_1_0_AMQP_ERROR_ILLEGAL_STATE,
+                                           "Unknown link handle: ~p", [IncomingHandleInt])
+                    end,
+    #management_link{name = Name,
+                     delivery_count = IncomingDeliveryCount0,
+                     credit = 1,
+                     max_message_size = IncomingMaxMessageSize
+                    } = IncomingLink0,
+    #management_link_pair{
+       incoming_half = IncomingHandleInt,
+       outgoing_half = OutgoingHandleInt
+      } = maps:get(Name, LinkPairs),
+    OutgoingLink0 = case OutgoingHandleInt of
+                        unattached ->
+                            protocol_error(?V_1_0_AMQP_ERROR_PRECONDITION_FAILED,
+                                           "received transfer on half open management link pair", []);
+                        _ ->
+                            maps:get(OutgoingHandleInt, OutgoingLinks)
+                    end,
+    #management_link{name = Name,
+                     delivery_count = OutgoingDeliveryCount,
+                     credit = OutgoingCredit,
+                     max_message_size = OutgoingMaxMessageSize} = OutgoingLink0,
+    case OutgoingCredit > 0 of
+        true ->
+            ok;
+        false ->
+            protocol_error(?V_1_0_AMQP_ERROR_PRECONDITION_FAILED,
+                           "insufficient credit (~b) for management link from server to client",
+                           [OutgoingCredit])
+    end,
+    Settled = default(MaybeSettled, false),
+    validate_transfer_rcv_settle_mode(RcvSettleMode, Settled),
+    validate_message_size(Request, IncomingMaxMessageSize),
+    Response = rabbit_amqp_management:process_request(Request, Vhost, User, ReaderPid),
+
+    Transfer = #'v1_0.transfer'{
+                  handle = ?UINT(OutgoingHandleInt),
+                  delivery_id = ?UINT(OutgoingDeliveryId),
+                  delivery_tag = {binary, <<>>},
+                  message_format = ?UINT(?MESSAGE_FORMAT),
+                  settled = true},
+    ?DEBUG("~s Outbound content:~n  ~tp~n",
+           [?MODULE, [amqp10_framing:pprint(Section) ||
+                      Section <- amqp10_framing:decode_bin(iolist_to_binary(Respon))]]),
+    validate_message_size(Response, OutgoingMaxMessageSize),
+    Frames = transfer_frames(Transfer, Response, MaxFrameSize),
+    PendingTransfer = #pending_management_transfer{frames = Frames},
+    IncomingDeliveryCount = add(IncomingDeliveryCount0, 1),
+    IncomingLink = IncomingLink0#management_link{delivery_count = IncomingDeliveryCount},
+    OutgoingLink = OutgoingLink0#management_link{delivery_count = add(OutgoingDeliveryCount, 1),
+                                                 credit = OutgoingCredit - 1},
+    State = State0#state{
+              outgoing_delivery_id = add(OutgoingDeliveryId, 1),
+              outgoing_pending = queue:in(PendingTransfer, Pending),
+              incoming_management_links = maps:update(IncomingHandleInt, IncomingLink, IncomingLinks),
+              outgoing_management_links = maps:update(OutgoingHandleInt, OutgoingLink, OutgoingLinks)},
+
+    Flow = flow(IncomingHandle, IncomingDeliveryCount, 1),
+    {[Flow], State}.
 
 incoming_link_transfer(
   #'v1_0.transfer'{more = true,
@@ -1555,6 +1783,7 @@ incoming_link_transfer(
             ok = validate_multi_transfer_settled(MaybeSettled, FirstSettled),
             {MsgBin0, FirstDeliveryId, FirstSettled}
     end,
+    validate_transfer_rcv_settle_mode(RcvSettleMode, Settled),
     validate_incoming_message_size(MsgBin),
 
     Sections = amqp10_framing:decode_bin(MsgBin),
@@ -1571,12 +1800,6 @@ incoming_link_transfer(
             check_write_permitted_on_topic(X, User, RoutingKey),
             QNames = rabbit_exchange:route(X, Mc, #{return_binding_keys => true}),
             rabbit_trace:tap_in(Mc, QNames, ConnName, ChannelNum, Username, Trace),
-            case not Settled andalso
-                 RcvSettleMode =:= ?V_1_0_RECEIVER_SETTLE_MODE_SECOND of
-                true -> protocol_error(?V_1_0_AMQP_ERROR_NOT_IMPLEMENTED,
-                                       "rcv-settle-mode second not supported", []);
-                false -> ok
-            end,
             Opts = #{correlation => {HandleInt, DeliveryId}},
             Qs0 = rabbit_amqqueue:lookup_many(QNames),
             Qs = rabbit_amqqueue:prepend_extra_bcc(Qs0),
@@ -1611,11 +1834,6 @@ incoming_link_transfer(
             {error, [Disposition, Detach]}
     end.
 
-rabbit_exchange_lookup(X = #exchange{}) ->
-    {ok, X};
-rabbit_exchange_lookup(XName = #resource{}) ->
-    rabbit_exchange:lookup(XName).
-
 ensure_routing_key(LinkRKey, Mc0) ->
     RKey = case LinkRKey of
                undefined ->
@@ -1635,6 +1853,11 @@ ensure_routing_key(LinkRKey, Mc0) ->
     Mc = mc:set_annotation(?ANN_ROUTING_KEYS, [RKey], Mc0),
     {RKey, Mc}.
 
+rabbit_exchange_lookup(X = #exchange{}) ->
+    {ok, X};
+rabbit_exchange_lookup(XName = #resource{}) ->
+    rabbit_exchange:lookup(XName).
+
 process_routing_confirm([], _SenderSettles = true, _, U) ->
     rabbit_global_counters:messages_unroutable_dropped(?PROTOCOL, 1),
     {U, []};
@@ -1651,7 +1874,7 @@ process_routing_confirm([_|_] = Qs, SenderSettles, DeliveryId, U0) ->
     {U, []}.
 
 released(DeliveryId) ->
-    #'v1_0.disposition'{role = ?RECV_ROLE,
+    #'v1_0.disposition'{role = ?AMQP_ROLE_RECEIVER,
                         first = ?UINT(DeliveryId),
                         settled = true,
                         state = #'v1_0.released'{}}.
@@ -1720,6 +1943,41 @@ ensure_target(#'v1_0.target'{address = Address,
             {error, {address_not_utf8_string, Address}}
     end.
 
+handle_outgoing_mgmt_link_flow_control(
+  #management_link{delivery_count = DeliveryCountSnd} = Link0,
+  #'v1_0.flow'{handle = Handle = ?UINT(HandleInt),
+               delivery_count = MaybeDeliveryCountRcv,
+               link_credit = ?UINT(LinkCreditRcv),
+               drain = Drain0,
+               echo = Echo0},
+  #state{outgoing_management_links = Links0,
+         outgoing_pending = Pending
+        } = State0) ->
+    Drain = default(Drain0, false),
+    Echo = default(Echo0, false),
+    DeliveryCountRcv = delivery_count_rcv(MaybeDeliveryCountRcv),
+    LinkCreditSnd = link_credit_snd(DeliveryCountRcv, LinkCreditRcv, DeliveryCountSnd),
+    {Count, Credit} = case Drain of
+                          true -> {add(DeliveryCountSnd, LinkCreditSnd), 0};
+                          false -> {DeliveryCountSnd, LinkCreditSnd}
+                      end,
+    State = case Echo orelse Drain of
+                true ->
+                    Flow = #'v1_0.flow'{
+                              handle = Handle,
+                              delivery_count = ?UINT(Count),
+                              link_credit = ?UINT(Credit),
+                              available = ?UINT(0),
+                              drain = Drain},
+                    State0#state{outgoing_pending = queue:in(Flow, Pending)};
+                false ->
+                    State0
+            end,
+    Link = Link0#management_link{delivery_count = Count,
+                                 credit = Credit},
+    Links = maps:update(HandleInt, Link, Links0),
+    State#state{outgoing_management_links = Links}.
+
 handle_outgoing_link_flow_control(
   #outgoing_link{queue_name_bin = QNameBin,
                  delivery_count = MaybeDeliveryCountSnd},
@@ -1730,19 +1988,9 @@ handle_outgoing_link_flow_control(
                echo = Echo0},
   State0 = #state{queue_states = QStates0,
                   cfg = #cfg{vhost = Vhost}}) ->
-    DeliveryCountRcv = case MaybeDeliveryCountRcv of
-                           ?UINT(Count) ->
-                               Count;
-                           undefined ->
-                               %% "In the event that the receiver does not yet know the delivery-count,
-                               %% i.e., delivery-countrcv is unspecified, the sender MUST assume that the
-                               %% delivery-countrcv is the first delivery-countsnd sent from sender to
-                               %% receiver, i.e., the delivery-countsnd specified in the flow state carried
-                               %% by the initial attach frame from the sender to the receiver." [2.6.7]
-                               ?INITIAL_DELIVERY_COUNT
-                       end,
-    Ctag = handle_to_ctag(HandleInt),
     QName = rabbit_misc:r(Vhost, queue, QNameBin),
+    Ctag = handle_to_ctag(HandleInt),
+    DeliveryCountRcv = delivery_count_rcv(MaybeDeliveryCountRcv),
     Drain = default(Drain0, false),
     Echo = default(Echo0, false),
     case MaybeDeliveryCountSnd of
@@ -1755,12 +2003,25 @@ handle_outgoing_link_flow_control(
             %% thanks to the queue event containing the consumer tag.
             State;
         {credit_api_v1, DeliveryCountSnd} ->
-            LinkCreditSnd = diff(add(DeliveryCountRcv, LinkCreditRcv), DeliveryCountSnd),
+            LinkCreditSnd = link_credit_snd(DeliveryCountRcv, LinkCreditRcv, DeliveryCountSnd),
             {ok, QStates, Actions} = rabbit_queue_type:credit_v1(QName, Ctag, LinkCreditSnd, Drain, QStates0),
             State1 = State0#state{queue_states = QStates},
             State = handle_queue_actions(Actions, State1),
             process_credit_reply_sync(Ctag, QName, LinkCreditSnd, State)
     end.
+
+delivery_count_rcv(?UINT(DeliveryCount)) ->
+    DeliveryCount;
+delivery_count_rcv(undefined) ->
+    %% "In the event that the receiver does not yet know the delivery-count,
+    %% i.e., delivery-countrcv is unspecified, the sender MUST assume that the
+    %% delivery-countrcv is the first delivery-countsnd sent from sender to
+    %% receiver, i.e., the delivery-countsnd specified in the flow state carried
+    %% by the initial attach frame from the sender to the receiver." [2.6.7]
+    ?INITIAL_DELIVERY_COUNT.
+
+link_credit_snd(DeliveryCountRcv, LinkCreditRcv, DeliveryCountSnd) ->
+    diff(add(DeliveryCountRcv, LinkCreditRcv), DeliveryCountSnd).
 
 %% The AMQP 0.9.1 credit extension was poorly designed because a consumer granting
 %% credits to a queue has to synchronously wait for a credit reply from the queue:
@@ -1880,6 +2141,13 @@ ensure_source(#'v1_0.source'{address = Address,
         _ ->
             {error, {address_not_utf8_string, Address}}
     end.
+
+transfer_frames(Transfer, Sections, unlimited) ->
+    [[Transfer, Sections]];
+transfer_frames(Transfer, Sections, MaxFrameSize) ->
+    %% TODO Ugh
+    TLen = iolist_size(amqp10_framing:encode_bin(Transfer)),
+    encode_frames(Transfer, Sections, MaxFrameSize - TLen, []).
 
 encode_frames(_T, _Msg, MaxContentLen, _Transfers) when MaxContentLen =< 0 ->
     protocol_error(?V_1_0_AMQP_ERROR_FRAME_SIZE_TOO_SMALL,
@@ -2005,6 +2273,14 @@ validate_multi_transfer_settled(Other, First)
       "field 'settled' of continuation transfer (~p) differs from "
       "(interpreted) field 'settled' on first transfer (~p)",
       [Other, First]).
+
+%% "If the message is being sent settled by the sender,
+%% the value of this field [rcv-settle-mode] is ignored." [2.7.5]
+validate_transfer_rcv_settle_mode(?V_1_0_RECEIVER_SETTLE_MODE_SECOND, _Settled = false) ->
+    protocol_error(?V_1_0_AMQP_ERROR_NOT_IMPLEMENTED,
+                   "rcv-settle-mode second not supported", []);
+validate_transfer_rcv_settle_mode(_, _) ->
+    ok.
 
 validate_incoming_message_size(Message) ->
     validate_message_size(Message, persistent_term:get(max_message_size)).
@@ -2135,14 +2411,6 @@ queue_is_durable(undefined) ->
     %% [3.5.3]
     queue_is_durable(?V_1_0_TERMINUS_DURABILITY_NONE).
 
-%% "The two endpoints are not REQUIRED to use the same handle. This means a peer
-%% is free to independently chose its handle when a link endpoint is associated
-%% with the session. The locally chosen handle is referred to as the output handle.
-%% The remotely chosen handle is referred to as the input handle." [2.6.2]
-%% For simplicity, we choose to use the same handle.
-output_handle(InputHandle) ->
-    _Outputhandle = InputHandle.
-
 -spec remove_link_from_outgoing_unsettled_map(link_handle() | rabbit_types:ctag(), Map) ->
     {Map, [rabbit_amqqueue:msg_id()]}
       when Map :: #{delivery_number() => #outgoing_unsettled{}}.
@@ -2205,19 +2473,60 @@ publisher_or_consumer_deleted(
 
 %% If we previously already sent a detach with an error condition, and the Detach we
 %% receive here is therefore the client's reply, do not reply again with a 3rd detach.
-maybe_detach_reply(Detach,
-                   #state{incoming_links = NewIncomingLinks,
-                          outgoing_links = NewOutgoingLinks,
-                          cfg = #cfg{writer_pid = WriterPid,
-                                     channel_num = Ch}},
-                   #state{incoming_links = OldIncomingLinks,
-                          outgoing_links = OldOutgoingLinks})
+maybe_detach_reply(
+  Detach,
+  #state{incoming_links = NewIncomingLinks,
+         outgoing_links = NewOutgoingLinks,
+         incoming_management_links = NewIncomingMgmtLinks,
+         outgoing_management_links = NewOutgoingMgmtLinks,
+         cfg = #cfg{writer_pid = WriterPid,
+                    channel_num = Ch}},
+  #state{incoming_links = OldIncomingLinks,
+         outgoing_links = OldOutgoingLinks,
+         incoming_management_links = OldIncomingMgmtLinks,
+         outgoing_management_links = OldOutgoingMgmtLinks})
   when map_size(NewIncomingLinks) < map_size(OldIncomingLinks) orelse
-       map_size(NewOutgoingLinks) < map_size(OldOutgoingLinks) ->
+       map_size(NewOutgoingLinks) < map_size(OldOutgoingLinks) orelse
+       map_size(NewIncomingMgmtLinks) < map_size(OldIncomingMgmtLinks) orelse
+       map_size(NewOutgoingMgmtLinks) < map_size(OldOutgoingMgmtLinks) ->
     Reply = Detach#'v1_0.detach'{error = undefined},
     rabbit_amqp_writer:send_command(WriterPid, Ch, Reply);
 maybe_detach_reply(_, _, _) ->
     ok.
+
+-spec maybe_detach_mgmt_link(link_handle(), state()) -> state().
+maybe_detach_mgmt_link(
+  HandleInt,
+  State = #state{management_link_pairs = LinkPairs0,
+                 incoming_management_links = IncomingLinks0,
+                 outgoing_management_links = OutgoingLinks0}) ->
+    case maps:take(HandleInt, IncomingLinks0) of
+        {#management_link{name = Name}, IncomingLinks} ->
+            Pair = #management_link_pair{outgoing_half = OutgoingHalf} = maps:get(Name, LinkPairs0),
+            LinkPairs = case OutgoingHalf of
+                            unattached ->
+                                maps:remove(Name, LinkPairs0);
+                            _ ->
+                                maps:update(Name, Pair#management_link_pair{incoming_half = unattached}, LinkPairs0)
+                        end,
+            State#state{incoming_management_links = IncomingLinks,
+                        management_link_pairs = LinkPairs};
+        error ->
+            case maps:take(HandleInt, OutgoingLinks0) of
+                {#management_link{name = Name}, OutgoingLinks} ->
+                    Pair = #management_link_pair{incoming_half = IncomingHalf} = maps:get(Name, LinkPairs0),
+                    LinkPairs = case IncomingHalf of
+                                    unattached ->
+                                        maps:remove(Name, LinkPairs0);
+                                    _ ->
+                                        maps:update(Name, Pair#management_link_pair{outgoing_half = unattached}, LinkPairs0)
+                                end,
+                    State#state{outgoing_management_links = OutgoingLinks,
+                                management_link_pairs = LinkPairs};
+                error ->
+                    State
+            end
+    end.
 
 check_internal_exchange(#exchange{internal = true,
                                   name = XName}) ->
@@ -2308,6 +2617,33 @@ maps_update_with(Key, Fun, Init, Map) ->
         _ ->
             Map#{Key => Init}
     end.
+
+max_message_size({ulong, Size})
+  when Size > 0 ->
+    Size;
+max_message_size(_) ->
+    %% "If this field is zero or unset, there is no
+    %% maximum size imposed by the link endpoint."
+    unlimited.
+
+check_paired({map, Properties}) ->
+    case lists:any(fun({{symbol, <<"paired">>}, true}) ->
+                           true;
+                      (_) ->
+                           false
+                   end, Properties) of
+        true ->
+            ok;
+        false ->
+            property_paired_not_set()
+    end;
+check_paired(_) ->
+    property_paired_not_set().
+
+-spec property_paired_not_set() -> no_return().
+property_paired_not_set() ->
+    protocol_error(?V_1_0_AMQP_ERROR_INVALID_FIELD,
+                   "Link property 'paired' is not set to boolean value 'true'", []).
 
 format_status(
   #{state := #state{cfg = Cfg,

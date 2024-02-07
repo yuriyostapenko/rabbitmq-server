@@ -1136,7 +1136,7 @@ events(Config) ->
     Pid = proplists:lookup(pid, Props),
     ClientProperties = {client_properties, List} = proplists:lookup(client_properties, Props),
     ?assert(lists:member(
-              {<<"product">>, longstr, <<"AMQP 1.0 client from the RabbitMQ Project">>},
+              {<<"product">>, longstr, <<"AMQP 1.0 client">>},
               List)),
     ?assert(lists:member(
               {<<"ignore-maintenance">>, bool, true},

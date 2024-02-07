@@ -28,8 +28,6 @@
 
 -export([clean_consumer_details/1, clean_channel_details/1]).
 
--export([args_hash/1]).
-
 -import(rabbit_misc, [pget/2, pget/3, pset/3]).
 -import(rabbit_data_coercion, [to_binary/1]).
 
@@ -340,7 +338,7 @@ pack_binding_props(<<"">>, []) ->
 pack_binding_props(Key, []) ->
     list_to_binary(quote_binding(Key));
 pack_binding_props(Key, Args) ->
-    ArgsEnc = args_hash(Args),
+    ArgsEnc = rabbit_amqp_management:args_hash(Args),
     list_to_binary(quote_binding(Key) ++ "~" ++ quote_binding(ArgsEnc)).
 
 quote_binding(Name) ->
@@ -595,6 +593,3 @@ parse_bool(true)        -> true;
 parse_bool(false)       -> false;
 parse_bool(undefined)   -> undefined;
 parse_bool(V)           -> throw({error, {not_boolean, V}}).
-
-args_hash(Args) ->
-    list_to_binary(rabbit_misc:base64url(<<(erlang:phash2(Args, 1 bsl 32)):32>>)).

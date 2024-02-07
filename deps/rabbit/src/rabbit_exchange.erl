@@ -94,7 +94,7 @@ serial(X) ->
 -spec declare
         (name(), type(), boolean(), boolean(), boolean(),
          rabbit_framing:amqp_table(), rabbit_types:username())
-        -> rabbit_types:exchange().
+        -> rabbit_types:exchange() | {error, term()}.
 
 declare(XName, Type, Durable, AutoDelete, Internal, Args, Username) ->
     X = rabbit_exchange_decorator:set(

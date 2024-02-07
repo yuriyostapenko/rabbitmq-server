@@ -127,7 +127,7 @@ lookup(RoutingKey, Hash, [#binding{args = Args} | Rest]) ->
     end.
 
 args_hash(Args) ->
-    rabbit_mgmt_format:args_hash(Args).
+    rabbit_amqp_management:args_hash(Args).
 
 unquote(Name) ->
     list_to_binary(rabbit_http_util:unquote(Name)).
