@@ -34,6 +34,9 @@ plt(
     ignore_warnings = True,
     libs = ["//deps/rabbitmq_cli:elixir"],  # keep
     plt = "//:base_plt",
+    deps = [
+        "@erlang_packages//cowlib",
+    ],
 )
 
 dialyze(
@@ -87,6 +90,9 @@ rabbitmq_integration_suite(
     name = "system_SUITE",
     additional_beam = [
         ":test_helpers",
+    ],
+    runtime_deps = [
+        "@erlang_packages//cowlib",
     ],
 )
 
