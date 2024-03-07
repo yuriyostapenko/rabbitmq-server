@@ -892,7 +892,7 @@ arguments_test(Config) ->
     passed.
 
 table_hash(Table) ->
-    binary_to_list(rabbit_amqp_management:args_hash(Table)).
+    binary_to_list(rabbit_mgmt_format:args_hash(Table)).
 
 queue_actions_test(Config) ->
     http_put(Config, "/queues/%2F/q", #{}, {group, '2xx'}),

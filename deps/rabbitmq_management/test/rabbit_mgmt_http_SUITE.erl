@@ -2094,7 +2094,7 @@ arguments_test(Config) ->
     passed.
 
 table_hash(Table) ->
-    binary_to_list(rabbit_amqp_management:args_hash(Table)).
+    binary_to_list(rabbit_mgmt_format:args_hash(Table)).
 
 arguments_table_test(Config) ->
     Args = #{'upstreams' => [<<"amqp://localhost/%2F/upstream1">>,

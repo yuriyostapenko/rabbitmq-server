@@ -1709,7 +1709,15 @@ persist_static_configuration() ->
                      _ ->
                          ?MAX_MSG_SIZE
                  end,
-    ok = persistent_term:put(max_message_size, MaxMsgSize).
+    ok = persistent_term:put(max_message_size, MaxMsgSize),
+
+    %% This regex matches for example
+    %% src=e1;dstq=q2;key=my-key;args=
+    %% Source, destination and binding key values must be percent encoded.
+    %% Binding args use the URL safe Base 64 Alphabet: https://datatracker.ietf.org/doc/html/rfc4648#section-5
+    {ok, MP} = re:compile(
+                 <<"^src=([0-9A-Za-z\-.\_\~%]+);dst([eq])=([0-9A-Za-z\-.\_\~%]+);key=([0-9A-Za-z\-.\_\~%]*);args=([0-9A-Za-z\-\_]*)$">>),
+    ok = persistent_term:put(mp_binding_uri_path_segment, MP).
 
 persist_static_configuration(Params) ->
     App = ?MODULE,

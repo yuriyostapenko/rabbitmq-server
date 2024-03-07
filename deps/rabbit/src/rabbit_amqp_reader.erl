@@ -491,8 +491,7 @@ handle_1_0_connection_frame(
                         %% "the value in idle-time-out SHOULD be half the peer's actual timeout threshold" [2.4.5]
                         idle_time_out  = {uint, ReceiveTimeoutMillis div 2},
                         container_id   = {utf8, rabbit_nodes:cluster_name()},
-                        offered_capabilities = {array, symbol, [{symbol, <<"AMQP_MANAGEMENT_V1_0">>},
-                                                                {symbol, <<"LINK_PAIR_V1_0">>}]},
+                        offered_capabilities = {array, symbol, [{symbol, <<"LINK_PAIR_V1_0">>}]},
                         properties     = server_properties()}),
     State;
 handle_1_0_connection_frame(#'v1_0.close'{}, State0) ->

@@ -167,8 +167,7 @@ init_per_testcase(T, Config)
        T =:= roundtrip_with_drain_quorum_queue orelse
        T =:= timed_get_quorum_queue orelse
        T =:= available_messages_quorum_queue ->
-    case rabbit_ct_broker_helpers:rpc(
-           Config, rabbit_feature_flags, is_enabled, [credit_api_v2]) of
+    case rpc(Config, rabbit_feature_flags, is_enabled, [credit_api_v2]) of
         true ->
             rabbit_ct_helpers:testcase_started(Config, T);
         false ->
@@ -2322,9 +2321,8 @@ async_notify(SenderSettleMode, QType, Config) ->
             %% If it is a stream we need to wait until there is a local member
             %% on the node we want to subscibe from before proceeding.
             rabbit_ct_helpers:await_condition(
-              fun() -> rabbit_ct_broker_helpers:rpc(
-                         Config, 0, ?MODULE, has_local_member,
-                         [rabbit_misc:r(<<"/">>, queue, QName)])
+              fun() -> rpc(Config, 0, ?MODULE, has_local_member,
+                           [rabbit_misc:r(<<"/">>, queue, QName)])
               end, 30_000);
         _ ->
             ok

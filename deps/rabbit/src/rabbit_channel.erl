@@ -2420,6 +2420,7 @@ handle_method(#'queue.declare'{queue       = QueueNameBin,
                                                 Args0),
     StrippedQueueNameBin = strip_cr_lf(QueueNameBin),
     Durable = DurableDeclare andalso not ExclusiveDeclare,
+    Kind = queue,
     ActualNameBin = case StrippedQueueNameBin of
                         <<>> ->
                             case rabbit_amqqueue:is_server_named_allowed(Args) of
@@ -2431,9 +2432,9 @@ handle_method(#'queue.declare'{queue       = QueueNameBin,
                                       "Cannot declare a server-named queue for type ~tp",
                                       [rabbit_amqqueue:get_queue_type(Args)])
                             end;
-                        Other -> check_name('queue', Other)
+                        Other -> check_name(Kind, Other)
                     end,
-    QueueName = rabbit_misc:r(VHostPath, queue, ActualNameBin),
+    QueueName = rabbit_misc:r(VHostPath, Kind, ActualNameBin),
     check_configure_permitted(QueueName, User, AuthzContext),
     rabbit_core_metrics:queue_declared(QueueName),
     case rabbit_amqqueue:with(

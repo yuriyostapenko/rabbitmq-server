@@ -15,6 +15,14 @@
 -compile([export_all,
           nowarn_export_all]).
 
+-import(rabbit_ct_helpers,
+        [eventually/1,
+         eventually/3]).
+
+-import(rabbit_ct_broker_helpers,
+        [rpc/4,
+         rpc/5]).
+
 suite() ->
     [{timetrap, {minutes, 3}}].
 
@@ -24,7 +32,10 @@ all() ->
 
 groups() ->
     [
-     {tests, [shuffle], [all_management_operations]}
+     {tests, [shuffle],
+      [all_management_operations,
+       queue_binding_args
+      ]}
     ].
 
 init_per_suite(Config) ->
@@ -53,27 +64,26 @@ init_per_testcase(Testcase, Config) ->
     rabbit_ct_helpers:testcase_started(Config, Testcase).
 
 end_per_testcase(Testcase, Config) ->
+    %% Assert that every testcase cleaned up.
+    eventually(?_assertEqual([], rpc(Config, rabbit_amqqueue, list, []))),
     rabbit_ct_helpers:testcase_finished(Config, Testcase).
 
 all_management_operations(Config) ->
     OpnConf = connection_config(Config),
     {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    receive {amqp10_event, {connection, C, opened}}
-              when C =:= Connection -> ok
-    after 5000 -> ct:fail({missing_event, ?LINE})
-    end,
     {ok, Session} = amqp10_client:begin_session_sync(Connection),
     {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(
                        Session, <<"my-link-pair">>),
 
-    QName = <<"q1">>,
+    QName = <<"my 🐇"/utf8>>,
     Q = #{name => QName,
           durable => true,
           exclusive => false,
           auto_delete => false,
           arguments => #{<<"x-queue-type">> => {symbol, <<"quorum">>}}},
-    {ok, #{{utf8, <<"target">>} := {utf8, TargetAddr1}} } = rabbitmq_amqp_client:declare_queue(LinkPair, Q),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, Q),
 
+    TargetAddr1 = <<"/amq/queue/", QName/binary>>,
     {ok, Sender1} = amqp10_client:attach_sender_link(Session, <<"sender 1">>, TargetAddr1),
     ok = wait_for_credit(Sender1),
     flush(credited),
@@ -82,7 +92,7 @@ all_management_operations(Config) ->
     ok = amqp10_client:send_msg(Sender1, Msg1),
     ok = wait_for_accepted(DTag1),
 
-    RoutingKey1 = BindingKey1 = <<"key 1">>,
+    RoutingKey1 = BindingKey1 = <<"🗝️ 1"/utf8>>,
     SourceExchange = <<"amq.direct">>,
     ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, SourceExchange, BindingKey1, #{})),
     TargetAddr2 = <<"/exchange/", SourceExchange/binary, "/", RoutingKey1/binary>>,
@@ -100,15 +110,16 @@ all_management_operations(Config) ->
     ok = amqp10_client:send_msg(Sender2, amqp10_msg:new(DTag3, <<"not routed">>, false)),
     ok = wait_for_settlement(DTag3, released),
 
-    XName = <<"my-fanout-exchange">>,
+    XName = <<"my fanout exchange 🥳"/utf8>>,
     X = #{name => XName,
           type => <<"fanout">>,
           durable => true,
           auto_delete => false,
           internal => false,
           arguments => #{}},
-    {ok, #{{utf8, <<"target">>} := {utf8, TargetAddr3}} } = rabbitmq_amqp_client:declare_exchange(LinkPair, X),
+    {ok, #{}} = rabbitmq_amqp_client:declare_exchange(LinkPair, X),
 
+    TargetAddr3 = <<"/exchange/", XName/binary>>,
     SourceExchange = <<"amq.direct">>,
     ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, <<"ignored">>, #{})),
 
@@ -121,7 +132,8 @@ all_management_operations(Config) ->
     ok = wait_for_accepted(DTag4),
 
     RoutingKey2 = BindingKey2 = <<"key 2">>,
-    ?assertEqual(ok, rabbitmq_amqp_client:bind_exchange(LinkPair, XName, SourceExchange, BindingKey2, #{})),
+    BindingArgs = #{<<" 😬 "/utf8>> => {utf8, <<" 😬 "/utf8>>}},
+    ?assertEqual(ok, rabbitmq_amqp_client:bind_exchange(LinkPair, XName, SourceExchange, BindingKey2, BindingArgs)),
     TargetAddr4 = <<"/exchange/", SourceExchange/binary, "/", RoutingKey2/binary>>,
 
     {ok, Sender4} = amqp10_client:attach_sender_link(Session, <<"sender 4">>, TargetAddr4),
@@ -132,7 +144,7 @@ all_management_operations(Config) ->
     ok = amqp10_client:send_msg(Sender4, Msg4),
     ok = wait_for_accepted(DTag5),
 
-    ?assertEqual(ok, rabbitmq_amqp_client:unbind_exchange(LinkPair, XName, SourceExchange, BindingKey2, #{})),
+    ?assertEqual(ok, rabbitmq_amqp_client:unbind_exchange(LinkPair, XName, SourceExchange, BindingKey2, BindingArgs)),
     DTag6 = <<"tag 6">>,
     ok = amqp10_client:send_msg(Sender4, amqp10_msg:new(DTag6, <<"not routed">>, false)),
     ok = wait_for_settlement(DTag6, released),
@@ -155,6 +167,63 @@ all_management_operations(Config) ->
     ?assertEqual({ok, #{message_count => 0}},
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
 
+    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
+    ok = amqp10_client:end_session(Session),
+    ok = amqp10_client:close_connection(Connection).
+
+queue_binding_args(Config) ->
+    OpnConf = connection_config(Config),
+    {ok, Connection} = amqp10_client:open_connection(OpnConf),
+    {ok, Session} = amqp10_client:begin_session_sync(Connection),
+    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my link pair">>),
+
+    QName = <<"my queue ~!@#$%^&*()_+🙈`-=[]\;',./"/utf8>>,
+    Q = #{name => QName,
+          durable => false,
+          exclusive => true,
+          auto_delete => false,
+          arguments => #{<<"x-queue-type">> => {symbol, <<"classic">>}}},
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, Q),
+
+    Exchange = <<"amq.headers">>,
+    BindingKey = <<>>,
+    BindingArgs = #{<<"key 1">> => {utf8, <<"👏"/utf8>>},
+                    <<"key 2">> => {uint, 3},
+                    <<"key 3">> => true,
+                    <<"x-match">> => {utf8, <<"all">>}},
+    ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, Exchange, BindingKey, BindingArgs)),
+
+    TargetAddr = <<"/exchange/amq.headers">>,
+    {ok, Sender} = amqp10_client:attach_sender_link(Session, <<"sender">>, TargetAddr),
+    ok = wait_for_credit(Sender),
+    flush(credited),
+    DTag1 = <<"tag 1">>,
+    Msg1 = amqp10_msg:new(DTag1, <<"m1">>, false),
+    AppProps = #{<<"key 1">> => <<"👏"/utf8>>,
+                 <<"key 2">> => 3,
+                 <<"key 3">> => true},
+    ok = amqp10_client:send_msg(Sender, amqp10_msg:set_application_properties(AppProps, Msg1)),
+    ok = wait_for_accepted(DTag1),
+
+    DTag2 = <<"tag 2">>,
+    Msg2 = amqp10_msg:new(DTag2, <<"m2">>, false),
+    ok = amqp10_client:send_msg(Sender,
+                                amqp10_msg:set_application_properties(
+                                  maps:remove(<<"key 2">>, AppProps),
+                                  Msg2)),
+    ok = wait_for_settlement(DTag2, released),
+
+    ?assertEqual(ok, rabbitmq_amqp_client:unbind_queue(LinkPair, QName, Exchange, BindingKey, BindingArgs)),
+
+    DTag3 = <<"tag 3">>,
+    Msg3 = amqp10_msg:new(DTag3, <<"m3">>, false),
+    ok = amqp10_client:send_msg(Sender, amqp10_msg:set_application_properties(AppProps, Msg3)),
+    ok = wait_for_settlement(DTag3, released),
+
+    ?assertEqual({ok, #{message_count => 1}},
+                 rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
+
+    ok = amqp10_client:detach_link(Sender),
     ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
     ok = amqp10_client:end_session(Session),
     ok = amqp10_client:close_connection(Connection).

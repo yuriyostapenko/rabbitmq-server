@@ -49,6 +49,14 @@
 %% we grant depending on how fast target queue(s) actually confirm messages.
 -define(LINK_CREDIT_RCV, 128).
 
+%% Pure HTTP clients of a future HTTP API (v2) would call endpoints as follows:
+%% GET /v2/vhosts/:vhost/queues/:queue
+%%
+%% Here, we use the terminus address /management/v2 so that AMQP 1.0 clients declare the HTTP API version
+%% at link attachment time. The vhost is already determined at AMQP connection open time.
+%% Therefore, there is no need to send the HTTP API version and the vhost in every HTTP over AMQP request.
+-define(MANAGEMENT_NODE_ADDRESS, <<"/management/v2">>).
+
 -export([start_link/8,
          process_frame/2,
          list_local/0,
@@ -735,7 +743,7 @@ handle_control(#'v1_0.attach'{
                   name = Name = {utf8, LinkName},
                   handle = Handle = ?UINT(HandleInt),
                   source = Source = #'v1_0.source'{address = ClientTerminusAddress},
-                  target = Target = #'v1_0.target'{address = {utf8, <<"$management">>}},
+                  target = Target = #'v1_0.target'{address = {utf8, ?MANAGEMENT_NODE_ADDRESS}},
                   initial_delivery_count = DeliveryCount = ?UINT(DeliveryCountInt),
                   properties = Properties
                  } = Attach,
@@ -792,7 +800,7 @@ handle_control(#'v1_0.attach'{
                   role = ?AMQP_ROLE_RECEIVER,
                   name = Name = {utf8, LinkName},
                   handle = Handle = ?UINT(HandleInt),
-                  source = Source = #'v1_0.source'{address = {utf8, <<"$management">>}},
+                  source = Source = #'v1_0.source'{address = {utf8, ?MANAGEMENT_NODE_ADDRESS}},
                   target = Target = #'v1_0.target'{address = ClientTerminusAddress},
                   rcv_settle_mode = RcvSettleMode,
                   max_message_size = MaybeMaxMessageSize,
@@ -1680,7 +1688,7 @@ incoming_mgmt_link_transfer(
     Settled = default(MaybeSettled, false),
     validate_transfer_rcv_settle_mode(RcvSettleMode, Settled),
     validate_message_size(Request, IncomingMaxMessageSize),
-    Response = rabbit_amqp_management:process_request(Request, Vhost, User, ReaderPid),
+    Response = rabbit_amqp_management:handle_request(Request, Vhost, User, ReaderPid),
 
     Transfer = #'v1_0.transfer'{
                   handle = ?UINT(OutgoingHandleInt),
@@ -1690,7 +1698,7 @@ incoming_mgmt_link_transfer(
                   settled = true},
     ?DEBUG("~s Outbound content:~n  ~tp~n",
            [?MODULE, [amqp10_framing:pprint(Section) ||
-                      Section <- amqp10_framing:decode_bin(iolist_to_binary(Respon))]]),
+                      Section <- amqp10_framing:decode_bin(iolist_to_binary(Response))]]),
     validate_message_size(Response, OutgoingMaxMessageSize),
     Frames = transfer_frames(Transfer, Response, MaxFrameSize),
     PendingTransfer = #pending_management_transfer{frames = Frames},
@@ -1917,7 +1925,7 @@ ensure_target(#'v1_0.target'{address = Address,
                 {ok, Dest} ->
                     QNameBin = ensure_terminus(target, Dest, Vhost, User, Durable),
                     {XNameList1, RK} = rabbit_routing_parser:parse_routing(Dest),
-                    XNameBin = list_to_binary(XNameList1),
+                    XNameBin = unicode:characters_to_binary(XNameList1),
                     XName = rabbit_misc:r(Vhost, exchange, XNameBin),
                     {ok, X} = rabbit_exchange:lookup(XName),
                     check_internal_exchange(X),
@@ -1933,7 +1941,7 @@ ensure_target(#'v1_0.target'{address = Address,
                     RoutingKey = case RK of
                                      undefined -> undefined;
                                      []        -> undefined;
-                                     _         -> list_to_binary(RK)
+                                     _         -> unicode:characters_to_binary(RK)
                                  end,
                     {ok, Exchange, RoutingKey, QNameBin};
                 {error, _} = E ->
@@ -2117,8 +2125,8 @@ ensure_source(#'v1_0.source'{address = Address,
                             true = string:equal(QNameList, QNameBin),
                             {ok, QNameBin};
                         {XNameList, RoutingKeyList} ->
-                            RoutingKey = list_to_binary(RoutingKeyList),
-                            XNameBin = list_to_binary(XNameList),
+                            RoutingKey = unicode:characters_to_binary(RoutingKeyList),
+                            XNameBin = unicode:characters_to_binary(XNameList),
                             XName = rabbit_misc:r(Vhost, exchange, XNameBin),
                             QName = rabbit_misc:r(Vhost, queue, QNameBin),
                             Binding = #binding{source = XName,
@@ -2322,19 +2330,19 @@ ensure_terminus(target, {queue, undefined}, _, _, _) ->
     %% Default exchange exists.
     undefined;
 ensure_terminus(_, {queue, QNameList}, Vhost, User, Durability) ->
-    declare_queue(list_to_binary(QNameList), Vhost, User, Durability);
+    declare_queue(unicode:characters_to_binary(QNameList), Vhost, User, Durability);
 ensure_terminus(_, {amqqueue, QNameList}, Vhost, _, _) ->
     %% Target "/amq/queue/" is handled specially due to AMQP legacy:
     %% "Queue names starting with "amq." are reserved for pre-declared and
     %% standardised queues. The client MAY declare a queue starting with "amq."
     %% if the passive option is set, or the queue already exists."
-    QNameBin = list_to_binary(QNameList),
+    QNameBin = unicode:characters_to_binary(QNameList),
     ok = exit_if_absent(queue, Vhost, QNameBin),
     QNameBin.
 
-exit_if_absent(Type, Vhost, Name) ->
-    ResourceName = rabbit_misc:r(Vhost, Type, rabbit_data_coercion:to_binary(Name)),
-    Mod = case Type of
+exit_if_absent(Kind, Vhost, Name) ->
+    ResourceName = rabbit_misc:r(Vhost, Kind, unicode:characters_to_binary(Name)),
+    Mod = case Kind of
               exchange -> rabbit_exchange;
               queue -> rabbit_amqqueue
           end,
