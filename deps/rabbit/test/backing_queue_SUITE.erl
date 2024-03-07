@@ -123,10 +123,6 @@ init_per_group1(backing_queue_tests, Config) ->
                "Backing queue module not supported by this test group: ~tp~n",
                [Module])}
     end;
-init_per_group1(backing_queue_v2, Config) ->
-    ok = rabbit_ct_broker_helpers:rpc(Config, 0,
-      application, set_env, [rabbit, classic_queue_default_version, 2]),
-    Config;
 init_per_group1(backing_queue_embed_limit_0, Config) ->
     ok = rabbit_ct_broker_helpers:rpc(Config, 0,
       application, set_env, [rabbit, queue_index_embed_msgs_below, 0]),
@@ -170,11 +166,6 @@ end_per_group(Group, Config) ->
 end_per_group1(backing_queue_tests, Config) ->
     rabbit_ct_broker_helpers:rpc(Config, 0,
       ?MODULE, teardown_backing_queue_test_group, [Config]);
-end_per_group1(Group, Config)
-when   Group =:= backing_queue_v2 ->
-    ok = rabbit_ct_broker_helpers:rpc(Config, 0,
-      application, unset_env, [rabbit, classic_queue_default_version]),
-    Config;
 end_per_group1(Group, Config)
 when   Group =:= backing_queue_embed_limit_0
 orelse Group =:= backing_queue_embed_limit_1024 ->
