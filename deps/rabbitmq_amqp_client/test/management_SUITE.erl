@@ -117,7 +117,7 @@ all_management_operations(Config) ->
           auto_delete => false,
           internal => false,
           arguments => #{}},
-    {ok, #{}} = rabbitmq_amqp_client:declare_exchange(LinkPair, X),
+    ?assertEqual(ok, rabbitmq_amqp_client:declare_exchange(LinkPair, X)),
 
     TargetAddr3 = <<"/exchange/", XName/binary>>,
     SourceExchange = <<"amq.direct">>,

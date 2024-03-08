@@ -13,6 +13,7 @@ def all_beam_files(name = "all_beam_files"):
         app_name = "rabbitmq_amqp_client",
         dest = "ebin",
         erlc_opts = "//:erlc_opts",
+        deps = ["//deps/amqp10_common:erlang_app"],
     )
 
 def all_srcs(name = "all_srcs"):
@@ -48,6 +49,7 @@ def all_test_beam_files(name = "all_test_beam_files"):
         app_name = "rabbitmq_amqp_client",
         dest = "test",
         erlc_opts = "//:test_erlc_opts",
+        deps = ["//deps/amqp10_common:erlang_app"],
     )
     filegroup(
         name = "test_beam_files",

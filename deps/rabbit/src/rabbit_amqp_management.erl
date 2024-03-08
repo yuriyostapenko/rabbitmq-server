@@ -5,32 +5,22 @@
 
 -export([handle_request/4]).
 
-%% An HTTP message mapped to AMQP using projected mode
-%% [HTTP over AMQP Working Draft 06 §4.1]
--record(msg,
-        {
-         properties :: #'v1_0.properties'{},
-         application_properties :: list(),
-         data = [] :: [#'v1_0.data'{}]
-        }).
-
 -spec handle_request(binary(), rabbit_types:vhost(), rabbit_types:user(), pid()) -> iolist().
 handle_request(Request, Vhost, User, ConnectionPid) ->
     ReqSections = amqp10_framing:decode_bin(Request),
     ?DEBUG("~s Inbound request:~n  ~tp",
            [?MODULE, [amqp10_framing:pprint(Section) || Section <- ReqSections]]),
-    #msg{properties = #'v1_0.properties'{
-                         message_id = MessageId,
-                         to = {utf8, HttpRequestTarget},
-                         subject = {utf8, HttpMethod},
-                         %% see Link Pair CS 01 §2.1
-                         %% https://docs.oasis-open.org/amqp/linkpair/v1.0/cs01/linkpair-v1.0-cs01.html#_Toc51331305
-                         reply_to = {utf8, <<"$me">>}},
-         application_properties = _OtherHttpHeaders,
-         data = ReqBody
-        } = decode_req(ReqSections, {undefined, undefined, []}),
+    {#'v1_0.properties'{
+        message_id = MessageId,
+        to = {utf8, HttpRequestTarget},
+        subject = {utf8, HttpMethod},
+        %% see Link Pair CS 01 §2.1
+        %% https://docs.oasis-open.org/amqp/linkpair/v1.0/cs01/linkpair-v1.0-cs01.html#_Toc51331305
+        reply_to = {utf8, <<"$me">>}},
+     ReqBin
+    } = decode_req(ReqSections, {undefined, undefined}),
     {PathSegments, QueryMap} = parse_uri(HttpRequestTarget),
-    ReqPayload = amqp10_framing:decode_bin(list_to_binary(ReqBody)),
+    ReqPayload = amqp10_framing:decode_bin(ReqBin),
     {RespProps0,
      RespAppProps0 = #'v1_0.application_properties'{content = C},
      RespPayload} = handle_http_req(HttpMethod,
@@ -47,7 +37,8 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
                              correlation_id = MessageId},
     RespAppProps = RespAppProps0#'v1_0.application_properties'{
                                    content = [{{utf8, <<"http:response">>}, {utf8, <<"1.1">>}} | C]},
-    RespDataSect = #'v1_0.data'{content = iolist_to_binary(amqp10_framing:encode_bin(RespPayload))},
+    RespBody = iolist_to_binary(amqp10_framing:encode_bin(RespPayload)),
+    RespDataSect = #'v1_0.amqp_value'{content = {binary, RespBody}},
     RespSections = [RespProps, RespAppProps, RespDataSect],
     [amqp10_framing:encode_bin(Sect) || Sect <- RespSections].
 
@@ -79,7 +70,7 @@ handle_http_req(<<"PUT">>,
     {new, _Q} = rabbit_queue_type:declare(Q0, node()),
     Props = #'v1_0.properties'{subject = {utf8, <<"201">>}},
     AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = {map, []},
+    RespPayload = undefined,
     {Props, AppProps, RespPayload};
 
 handle_http_req(<<"PUT">>,
@@ -107,14 +98,13 @@ handle_http_req(<<"PUT">>,
                                  Username),
     Props = #'v1_0.properties'{subject = {utf8, <<"201">>} },
     AppProps = #'v1_0.application_properties'{content = []},
-
-    RespPayload = {map, []},
+    RespPayload = undefined,
     {Props, AppProps, RespPayload};
 
 handle_http_req(<<"DELETE">>,
                 [<<"queues">>, QNameBinQ, <<"messages">>],
                 _Query,
-                [],
+                [undefined],
                 Vhost,
                 _User,
                 ConnPid) ->
@@ -133,7 +123,7 @@ handle_http_req(<<"DELETE">>,
 handle_http_req(<<"DELETE">>,
                 [<<"queues">>, QNameBinQ],
                 _Query,
-                [],
+                [undefined],
                 Vhost,
                 #user{username = Username},
                 ConnPid) ->
@@ -148,7 +138,7 @@ handle_http_req(<<"DELETE">>,
 handle_http_req(<<"DELETE">>,
                 [<<"exchanges">>, XNameBinQ],
                 _Query,
-                [],
+                [undefined],
                 Vhost,
                 #user{username = Username},
                 _ConnPid) ->
@@ -164,7 +154,7 @@ handle_http_req(<<"DELETE">>,
          end,
     Props = #'v1_0.properties'{subject = {utf8, <<"204">>}},
     AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = {map, []},
+    RespPayload = undefined,
     {Props, AppProps, RespPayload};
 
 handle_http_req(<<"POST">>,
@@ -195,13 +185,13 @@ handle_http_req(<<"POST">>,
     Location = compose_binding_uri(SrcXNameBin, DstKind, DstNameBin, BindingKey, Args),
     AppProps = #'v1_0.application_properties'{
                   content = [{{utf8, <<"location">>}, {utf8, Location}}]},
-    RespPayload = {map, []},
+    RespPayload = undefined,
     {Props, AppProps, RespPayload};
 
 handle_http_req(<<"DELETE">>,
                 [<<"bindings">>, BindingSegment],
                 _Query,
-                [],
+                [undefined],
                 Vhost,
                 #user{username = Username},
                 _ConnPid) ->
@@ -217,14 +207,14 @@ handle_http_req(<<"DELETE">>,
     end,
     Props = #'v1_0.properties'{subject = {utf8, <<"204">>}},
     AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = {map, []},
+    RespPayload = undefined,
     {Props, AppProps, RespPayload};
 
 handle_http_req(<<"GET">>,
                 [<<"bindings">>],
                 QueryMap = #{<<"src">> := SrcXNameBin,
                              <<"key">> := Key},
-                [],
+                [undefined],
                 Vhost,
                 _User,
                 _ConnPid) ->
@@ -326,17 +316,13 @@ encode_bindings(Bindings) ->
            end, Bindings),
     {list, Bs}.
 
-decode_req([], {Props, AppProps, DataRev}) ->
-    #msg{properties = Props,
-         application_properties = AppProps,
-         data = lists:reverse(DataRev)};
+decode_req([], Acc) ->
+    Acc;
 decode_req([#'v1_0.properties'{} = P | Rem], Acc) ->
     decode_req(Rem, setelement(1, Acc, P));
-decode_req([#'v1_0.application_properties'{content = Content} | Rem], Acc) ->
-    decode_req(Rem, setelement(2, Content, Acc));
-decode_req([#'v1_0.data'{content = C} | Rem], {Props, AppProps, DataRev}) ->
-    decode_req(Rem, {Props, AppProps, [C | DataRev]});
-decode_req([_IgnoreOtherSection | Rem], Acc) ->
+decode_req([#'v1_0.amqp_value'{content = {binary, B}} | Rem], Acc) ->
+    decode_req(Rem, setelement(2, Acc, B));
+decode_req([_IgnoreSection | Rem], Acc) ->
     decode_req(Rem, Acc).
 
 parse_uri(Uri) ->

@@ -8,6 +8,8 @@
 
 -feature(maybe_expr, enable).
 
+-include_lib("amqp10_common/include/amqp10_framing.hrl").
+
 -export[attach_management_link_pair_sync/2,
         detach_management_link_pair_sync/1,
         declare_queue/2,
@@ -140,9 +142,7 @@ declare_queue(LinkPair, QueueProperties) ->
                                           end, [], V),
                                {N, [{{utf8, <<"arguments">>}, {map, KVList}} | L0]}
                        end, {undefined, []}, QueueProperties),
-    Body1 = {map, Body0},
-    Body = iolist_to_binary(amqp10_framing:encode_bin(Body1)),
-
+    Body = {map, Body0},
     QNameQuoted = uri_string:quote(QName),
     Props = #{subject => <<"PUT">>,
               to => <<"/queues/", QNameQuoted/binary>>},
@@ -151,9 +151,10 @@ declare_queue(LinkPair, QueueProperties) ->
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
                 #{subject := <<"201">>} ->
-                    RespBody = amqp10_msg:body_bin(Resp),
-                    [{map, KVList}] = amqp10_framing:decode_bin(RespBody),
-                    {ok, proplists:to_map(KVList)};
+                    #'v1_0.amqp_value'{content = {binary, RespBin}} = amqp10_msg:body(Resp),
+                    [undefined] = amqp10_framing:decode_bin(RespBin),
+                    % {ok, proplists:to_map(KVList)};
+                    {ok, #{}};
                 Other ->
                     {error, Other}
             end;
@@ -179,14 +180,12 @@ bind(DestinationKind, LinkPair, Destination, Source, BindingKey, BindingArgument
                      when is_binary(Key) ->
                        [{{utf8, Key}, TaggedVal} | L]
                end, [], BindingArguments),
-    Body0 = {map, [
-                   {{utf8, <<"source">>}, {utf8, Source}},
-                   {{utf8, DestinationKind}, {utf8, Destination}},
-                   {{utf8, <<"binding_key">>}, {utf8, BindingKey}},
-                   {{utf8, <<"arguments">>}, {map, KVList}}
-                  ]},
-    Body = iolist_to_binary(amqp10_framing:encode_bin(Body0)),
-
+    Body = {map, [
+                  {{utf8, <<"source">>}, {utf8, Source}},
+                  {{utf8, DestinationKind}, {utf8, Destination}},
+                  {{utf8, <<"binding_key">>}, {utf8, BindingKey}},
+                  {{utf8, <<"arguments">>}, {map, KVList}}
+                 ]},
     Props = #{subject => <<"POST">>,
               to => <<"/bindings">>},
 
@@ -235,12 +234,12 @@ unbind(DestinationChar, LinkPair, Destination, Source, BindingKey, BindingArgume
     Props = #{subject => <<"GET">>,
               to => Uri0},
 
-    case request(LinkPair, Props, <<>>) of
+    case request(LinkPair, Props, undefined) of
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
                 #{subject := <<"200">>} ->
-                    RespBody = amqp10_msg:body_bin(Resp),
-                    [{list, Bindings}] = amqp10_framing:decode_bin(RespBody),
+                    #'v1_0.amqp_value'{content = {binary, RespBin}} = amqp10_msg:body(Resp),
+                    [{list, Bindings}] = amqp10_framing:decode_bin(RespBin),
                     case search_binding_uri(BindingArguments, Bindings) of
                         {ok, Uri} ->
                             delete_binding(LinkPair, Uri);
@@ -278,7 +277,7 @@ search_binding_uri(BindingArguments, [{map, Binding} | Bindings]) ->
 delete_binding(LinkPair, BindingUri) ->
     Props = #{subject => <<"DELETE">>,
               to => BindingUri},
-    case request(LinkPair, Props, <<>>) of
+    case request(LinkPair, Props, undefined) of
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
                 #{subject := <<"204">>} ->
@@ -307,15 +306,15 @@ purge_or_delete_queue(LinkPair, QueueName, PathSuffix) ->
     HttpRequestTarget = <<"/queues/", QNameQuoted/binary, PathSuffix/binary>>,
     Props = #{subject => <<"DELETE">>,
               to => HttpRequestTarget},
-    case request(LinkPair, Props, <<>>) of
+    case request(LinkPair, Props, undefined) of
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
                 #{subject := <<"200">>} ->
-                    RespBody = amqp10_msg:body_bin(Resp),
+                    #'v1_0.amqp_value'{content = {binary, RespBin}} = amqp10_msg:body(Resp),
                     [{map, [
                             {{utf8, <<"message_count">>}, {ulong, Count}}
                            ]
-                     }] = amqp10_framing:decode_bin(RespBody),
+                     }] = amqp10_framing:decode_bin(RespBin),
                     {ok, #{message_count => Count}};
                 _ ->
                     {error, Resp}
@@ -325,7 +324,7 @@ purge_or_delete_queue(LinkPair, QueueName, PathSuffix) ->
     end.
 
 -spec declare_exchange(link_pair(), exchange_properties()) ->
-    {ok, map()} | {error, term()}.
+    ok | {error, term()}.
 declare_exchange(LinkPair, ExchangeProperties) ->
     {XName, Body0} = maps:fold(
                        fun(name, V, {undefined, L}) when is_binary(V) ->
@@ -346,8 +345,7 @@ declare_exchange(LinkPair, ExchangeProperties) ->
                                           end, [], V),
                                {N, [{{utf8, <<"arguments">>}, {map, KVList}} | L0]}
                        end, {undefined, []}, ExchangeProperties),
-    Body1 = {map, Body0},
-    Body = iolist_to_binary(amqp10_framing:encode_bin(Body1)),
+    Body = {map, Body0},
 
     XNameQuoted = uri_string:quote(XName),
     Props = #{subject => <<"PUT">>,
@@ -357,9 +355,9 @@ declare_exchange(LinkPair, ExchangeProperties) ->
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
                 #{subject := <<"201">>} ->
-                    RespBody = amqp10_msg:body_bin(Resp),
-                    [{map, KVList}] = amqp10_framing:decode_bin(RespBody),
-                    {ok, proplists:to_map(KVList)};
+                    #'v1_0.amqp_value'{content = {binary, RespBin}} = amqp10_msg:body(Resp),
+                    [undefined] = amqp10_framing:decode_bin(RespBin),
+                    ok;
                 _ ->
                     {error, Resp}
             end;
@@ -373,7 +371,7 @@ delete_exchange(LinkPair, ExchangeName) ->
     XNameQuoted = uri_string:quote(ExchangeName),
     Props = #{subject => <<"DELETE">>,
               to => <<"/exchanges/", XNameQuoted/binary>>},
-    case request(LinkPair, Props, <<>>) of
+    case request(LinkPair, Props, undefined) of
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
                 #{subject := <<"204">>} ->
@@ -385,14 +383,15 @@ delete_exchange(LinkPair, ExchangeName) ->
             Err
     end.
 
--spec request(link_pair(), amqp10_msg:amqp10_properties(), binary()) ->
+-spec request(link_pair(), amqp10_msg:amqp10_properties(), undefined | amqp10_prim()) ->
     {ok, Response :: amqp10_msg:amqp10_msg()} | {error, term()}.
 request(#link_pair{outgoing_link = OutgoingLink,
                    incoming_link = IncomingLink}, Properties, Body) ->
     MessageId = message_id(),
     Properties1 = Properties#{message_id => {binary, MessageId},
                               reply_to => <<"$me">>},
-    Request = amqp10_msg:new(<<>>, Body, true),
+    BodyBin = iolist_to_binary(amqp10_framing:encode_bin(Body)),
+    Request = amqp10_msg:new(<<>>, #'v1_0.amqp_value'{content = {binary, BodyBin}}, true),
     Request1 =  amqp10_msg:set_properties(Properties1, Request),
     ok = amqp10_client:flow_link_credit(IncomingLink, 1, never),
     case amqp10_client:send_msg(OutgoingLink, Request1) of

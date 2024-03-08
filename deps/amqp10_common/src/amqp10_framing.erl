@@ -120,10 +120,10 @@ decode({described, Descriptor, {map, Fields}}) ->
         Else ->
             fill_from_map(Else, Fields)
     end;
-decode({described, Descriptor, {binary, Field}}) ->
+decode({described, Descriptor, {binary, Field} = BinaryField}) ->
     case amqp10_framing0:record_for(Descriptor) of
         #'v1_0.amqp_value'{} ->
-            #'v1_0.amqp_value'{content = {binary, Field}};
+            #'v1_0.amqp_value'{content = BinaryField};
         #'v1_0.data'{} ->
             #'v1_0.data'{content = Field}
     end;
