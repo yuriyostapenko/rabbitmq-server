@@ -22,7 +22,9 @@ def all_srcs(name = "all_srcs"):
         srcs = ["src/rabbitmq_amqp_client.erl"],
     )
     filegroup(name = "private_hdrs")
-    filegroup(name = "public_hdrs")
+    filegroup(name = "public_hdrs", srcs = [
+        "include/rabbitmq_amqp_client.hrl",
+    ])
     filegroup(name = "priv")
     filegroup(
         name = "license_files",
@@ -63,7 +65,8 @@ def test_suite_beam_files(name = "test_suite_beam_files"):
         testonly = True,
         srcs = ["test/management_SUITE.erl"],
         outs = ["test/management_SUITE.beam"],
+        hdrs = ["include/rabbitmq_amqp_client.hrl"],
         app_name = "rabbitmq_amqp_client",
         erlc_opts = "//:test_erlc_opts",
-        deps = ["//deps/amqp10_common:erlang_app"],
+        deps = ["//deps/amqp10_common:erlang_app", "//deps/rabbit_common:erlang_app"],
     )

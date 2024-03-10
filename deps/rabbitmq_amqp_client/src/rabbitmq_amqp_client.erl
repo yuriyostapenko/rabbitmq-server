@@ -8,6 +8,7 @@
 
 -feature(maybe_expr, enable).
 
+-include("rabbitmq_amqp_client.hrl").
 -include_lib("amqp10_common/include/amqp10_framing.hrl").
 
 -export[attach_management_link_pair_sync/2,
@@ -26,13 +27,9 @@
 -define(TIMEOUT, 15_000).
 -define(MANAGEMENT_NODE_ADDRESS, <<"/management/v2">>).
 
--record(link_pair, {outgoing_link :: amqp10_client:link_ref(),
-                    incoming_link :: amqp10_client:link_ref()}).
--type link_pair() :: #link_pair{}.
-
 -type x_args() :: #{binary() => {atom(), term()}}.
 
--type queue_properties() :: #{name => binary(),
+-type queue_properties() :: #{name := binary(),
                               durable => boolean(),
                               exclusive => boolean(),
                               auto_delete => boolean(),
@@ -46,8 +43,6 @@
                                  arguments => x_args()}.
 
 -type amqp10_prim() :: amqp10_binary_generator:amqp10_prim().
-
--export_type([link_pair/0]).
 
 -spec attach_management_link_pair_sync(pid(), binary()) ->
     {ok, link_pair()} | {error, term()}.

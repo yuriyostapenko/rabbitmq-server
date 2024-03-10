@@ -10,6 +10,7 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
     ReqSections = amqp10_framing:decode_bin(Request),
     ?DEBUG("~s Inbound request:~n  ~tp",
            [?MODULE, [amqp10_framing:pprint(Section) || Section <- ReqSections]]),
+
     {#'v1_0.properties'{
         message_id = MessageId,
         to = {utf8, HttpRequestTarget},
@@ -17,25 +18,31 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
         %% see Link Pair CS 01 §2.1
         %% https://docs.oasis-open.org/amqp/linkpair/v1.0/cs01/linkpair-v1.0-cs01.html#_Toc51331305
         reply_to = {utf8, <<"$me">>}},
-     ReqPayload
+     ReqBody
     } = decode_req(ReqSections, {undefined, undefined}),
-    {PathSegments, QueryMap} = parse_uri(HttpRequestTarget),
-    {RespProps0,
-     RespAppProps0 = #'v1_0.application_properties'{content = C},
-     RespBody} = handle_http_req(HttpMethod,
-                                 PathSegments,
-                                 QueryMap,
-                                 ReqPayload,
-                                 Vhost,
-                                 User,
-                                 ConnectionPid),
-    RespProps = RespProps0#'v1_0.properties'{
-                             %% "To associate a response with a request, the correlation-id value of the response
-                             %% properties MUST be set to the message-id value of the request properties."
-                             %% [HTTP over AMQP WD 06 §5.1]
-                             correlation_id = MessageId},
-    RespAppProps = RespAppProps0#'v1_0.application_properties'{
-                                   content = [{{utf8, <<"http:response">>}, {utf8, <<"1.1">>}} | C]},
+
+    {StatusCode,
+     RespAppProps0,
+     RespBody} = try {PathSegments, QueryMap} = parse_uri(HttpRequestTarget),
+                     handle_http_req(HttpMethod,
+                                     PathSegments,
+                                     QueryMap,
+                                     ReqBody,
+                                     Vhost,
+                                     User,
+                                     ConnectionPid)
+                 catch throw:{StatusCode0, Explanation} ->
+                           {StatusCode0, [], {utf8, unicode:characters_to_binary(Explanation)}}
+                 end,
+
+    RespProps = #'v1_0.properties'{
+                   subject = {utf8, StatusCode},
+                   %% "To associate a response with a request, the correlation-id value of the response
+                   %% properties MUST be set to the message-id value of the request properties."
+                   %% [HTTP over AMQP WD 06 §5.1]
+                   correlation_id = MessageId},
+    RespAppProps = #'v1_0.application_properties'{
+                      content = [{{utf8, <<"http:response">>}, {utf8, <<"1.1">>}} | RespAppProps0]},
     RespDataSect = #'v1_0.amqp_value'{content = RespBody},
     RespSections = [RespProps, RespAppProps, RespDataSect],
     [amqp10_framing:encode_bin(Sect) || Sect <- RespSections].
@@ -66,10 +73,7 @@ handle_http_req(<<"PUT">>,
     Q0 = amqqueue:new(QName, none, Durable, AutoDelete, Owner,
                       QArgs, Vhost, #{user => Username}, QType),
     {new, _Q} = rabbit_queue_type:declare(Q0, node()),
-    Props = #'v1_0.properties'{subject = {utf8, <<"201">>}},
-    AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = null,
-    {Props, AppProps, RespPayload};
+    {<<"201">>, [], null};
 
 handle_http_req(<<"PUT">>,
                 [<<"exchanges">>, XNameBinQ],
@@ -94,10 +98,7 @@ handle_http_req(<<"PUT">>,
                                  Internal,
                                  XArgs,
                                  Username),
-    Props = #'v1_0.properties'{subject = {utf8, <<"201">>} },
-    AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = null,
-    {Props, AppProps, RespPayload};
+    {<<"201">>, [], null};
 
 handle_http_req(<<"DELETE">>,
                 [<<"queues">>, QNameBinQ, <<"messages">>],
@@ -113,10 +114,8 @@ handle_http_req(<<"DELETE">>,
                       fun (Q) ->
                               rabbit_queue_type:purge(Q)
                       end),
-    Props = #'v1_0.properties'{subject = {utf8, <<"200">>}},
-    AppProps = #'v1_0.application_properties'{content = []},
     RespPayload = {map, [{{utf8, <<"message_count">>}, {ulong, NumMsgs}}]},
-    {Props, AppProps, RespPayload};
+    {<<"200">>, [], RespPayload};
 
 handle_http_req(<<"DELETE">>,
                 [<<"queues">>, QNameBinQ],
@@ -128,10 +127,8 @@ handle_http_req(<<"DELETE">>,
     QNameBin = uri_string:unquote(QNameBinQ),
     QName = rabbit_misc:r(Vhost, queue, QNameBin),
     {ok, NumMsgs} = rabbit_amqqueue:delete_with(QName, ConnPid, false, false, Username, true),
-    Props = #'v1_0.properties'{subject = {utf8, <<"200">>}},
-    AppProps = #'v1_0.application_properties'{content = []},
     RespPayload = {map, [{{utf8, <<"message_count">>}, {ulong, NumMsgs}}]},
-    {Props, AppProps, RespPayload};
+    {<<"200">>, [], RespPayload};
 
 handle_http_req(<<"DELETE">>,
                 [<<"exchanges">>, XNameBinQ],
@@ -150,10 +147,7 @@ handle_http_req(<<"DELETE">>,
                  %% %% TODO return deletion failure
                  %% {error, in_use} ->
          end,
-    Props = #'v1_0.properties'{subject = {utf8, <<"204">>}},
-    AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = null,
-    {Props, AppProps, RespPayload};
+    {<<"204">>, [], null};
 
 handle_http_req(<<"POST">>,
                 [<<"bindings">>],
@@ -179,12 +173,9 @@ handle_http_req(<<"POST">>,
                        args        = Args},
     %%TODO If the binding already exists, return 303 with location.
     ok = rabbit_binding:add(Binding, Username),
-    Props = #'v1_0.properties'{subject = {utf8, <<"201">>}},
     Location = compose_binding_uri(SrcXNameBin, DstKind, DstNameBin, BindingKey, Args),
-    AppProps = #'v1_0.application_properties'{
-                  content = [{{utf8, <<"location">>}, {utf8, Location}}]},
-    RespPayload = null,
-    {Props, AppProps, RespPayload};
+    AppProps = [{{utf8, <<"location">>}, {utf8, Location}}],
+    {<<"201">>, AppProps, null};
 
 handle_http_req(<<"DELETE">>,
                 [<<"bindings">>, BindingSegment],
@@ -203,10 +194,7 @@ handle_http_req(<<"DELETE">>,
         false ->
             ok
     end,
-    Props = #'v1_0.properties'{subject = {utf8, <<"204">>}},
-    AppProps = #'v1_0.application_properties'{content = []},
-    RespPayload = null,
-    {Props, AppProps, RespPayload};
+    {<<"204">>, [], null};
 
 handle_http_req(<<"GET">>,
                 [<<"bindings">>],
@@ -222,55 +210,79 @@ handle_http_req(<<"GET">>,
                                 #{<<"dstq">> := DstQ} ->
                                     {queue, DstQ};
                                 _ ->
-                                    %%TODO return 400
-                                    exit({bad_destination, QueryMap})
+                                    throw(<<"400">>, "missing 'dste' or 'dstq' in query: ~tp", QueryMap)
                             end,
     SrcXName = rabbit_misc:r(Vhost, exchange, SrcXNameBin),
     DstName = rabbit_misc:r(Vhost, DstKind, DstNameBin),
     Bindings0 = rabbit_binding:list_for_source_and_destination(SrcXName, DstName),
     Bindings = [B || B = #binding{key = K} <- Bindings0, K =:= Key],
     RespPayload = encode_bindings(Bindings),
-    Props = #'v1_0.properties'{subject = {utf8, <<"200">>}},
-    AppProps = #'v1_0.application_properties'{content = []},
-    {Props, AppProps, RespPayload}.
+    {<<"200">>, [], RespPayload}.
 
 decode_queue({map, KVList}) ->
-    lists:foldl(
-      fun({{utf8, <<"durable">>}, V}, Acc)
-            when is_boolean(V) ->
-              Acc#{durable => V};
-         ({{utf8, <<"exclusive">>}, V}, Acc)
-           when is_boolean(V) ->
-              Acc#{exclusive => V};
-         ({{utf8, <<"auto_delete">>}, V}, Acc)
-           when is_boolean(V) ->
-              Acc#{auto_delete => V};
-         ({{utf8, <<"arguments">>}, {map, List}}, Acc) ->
-              Args = [{Key, longstr, V}
-                      || {{utf8, Key = <<"x-", _/binary>>},
-                          {utf8, V}} <- List],
-              Acc#{arguments => Args}
-      end, #{}, KVList).
+    M = lists:foldl(
+          fun({{utf8, <<"durable">>}, V}, Acc)
+                when is_boolean(V) ->
+                  Acc#{durable => V};
+             ({{utf8, <<"exclusive">>}, V}, Acc)
+               when is_boolean(V) ->
+                  Acc#{exclusive => V};
+             ({{utf8, <<"auto_delete">>}, V}, Acc)
+               when is_boolean(V) ->
+                  Acc#{auto_delete => V};
+             ({{utf8, <<"arguments">>}, {map, List}}, Acc) ->
+                  Args = lists:map(fun({{utf8, Key = <<"x-", _/binary>>}, {Type, Val}})
+                                         when Type =:= utf8 orelse
+                                              Type =:= symbol ->
+                                           {Key, longstr, Val};
+                                      (Arg) ->
+                                           throw(<<"400">>,
+                                                 "unsupported queue argument ~tp",
+                                                 [Arg])
+                                   end, List),
+                  Acc#{arguments => Args};
+             (Prop, _Acc) ->
+                  throw(<<"400">>, "bad queue property ~tp", [Prop])
+          end, #{}, KVList),
+    Defaults = #{durable => true,
+                 exclusive => false,
+                 auto_delete => false,
+                 arguments => []},
+    maps:merge(Defaults, M).
 
 decode_exchange({map, KVList}) ->
-    lists:foldl(
-      fun({{utf8, <<"durable">>}, V}, Acc)
-           when is_boolean(V) ->
-              Acc#{durable => V};
-         ({{utf8, <<"auto_delete">>}, V}, Acc)
-           when is_boolean(V) ->
-              Acc#{auto_delete => V};
-         ({{utf8, <<"type">>}, {utf8, V}}, Acc) ->
-              Acc#{type => V};
-         ({{utf8, <<"internal">>}, V}, Acc)
-           when is_boolean(V) ->
-              Acc#{internal => V};
-         ({{utf8, <<"arguments">>}, {map, List}}, Acc) ->
-              Args = [{Key, longstr, V}
-                      || {{utf8, Key = <<"x-", _/binary>>},
-                          {utf8, V}} <- List],
-              Acc#{arguments => Args}
-      end, #{}, KVList).
+    M = lists:foldl(
+          fun({{utf8, <<"durable">>}, V}, Acc)
+                when is_boolean(V) ->
+                  Acc#{durable => V};
+             ({{utf8, <<"auto_delete">>}, V}, Acc)
+               when is_boolean(V) ->
+                  Acc#{auto_delete => V};
+             ({{utf8, <<"type">>}, {utf8, V}}, Acc) ->
+                  Acc#{type => V};
+             ({{utf8, <<"internal">>}, V}, Acc)
+               when is_boolean(V) ->
+                  Acc#{internal => V};
+             ({{utf8, <<"arguments">>}, {map, List}}, Acc) ->
+                  Args = lists:map(fun({{utf8, Key = <<"x-", _/binary>>}, {Type, Val}})
+                                         when Type =:= utf8 orelse
+                                              Type =:= symbol ->
+                                           {Key, longstr, Val};
+                                      (Arg) ->
+                                           throw(<<"400">>,
+                                                 "unsupported exchange argument ~tp",
+                                                 [Arg])
+                                   end, List),
+                  Acc#{arguments => Args};
+             (Prop, _Acc) ->
+                  throw(<<"400">>, "bad exchange property ~tp", [Prop])
+          end, #{}, KVList),
+    Defaults = #{durable => true,
+                 auto_delete => false,
+                 type => <<"direct">>,
+                 internal => false,
+                 arguments => []},
+    maps:merge(Defaults, M).
 
 decode_binding({map, KVList}) ->
     lists:foldl(
@@ -283,9 +295,18 @@ decode_binding({map, KVList}) ->
          ({{utf8, <<"binding_key">>}, {utf8, V}}, Acc) ->
               Acc#{binding_key => V};
          ({{utf8, <<"arguments">>}, {map, List}}, Acc) ->
-              Args = [mc_amqpl:to_091(Key, TypeVal)
-                      || {{utf8, Key}, TypeVal} <- List],
-              Acc#{arguments => Args}
+              Args = lists:map(fun({{T, Key}, TypeVal})
+                                     when T =:= utf8 orelse
+                                          T =:= symbol ->
+                                       mc_amqpl:to_091(Key, TypeVal);
+                                  (Arg) ->
+                                       throw(<<"400">>,
+                                             "unsupported binding argument ~tp",
+                                             [Arg])
+                               end, List),
+              Acc#{arguments => Args};
+         (Field, _Acc) ->
+              throw(<<"400">>, "bad binding field ~tp", [Field])
       end, #{}, KVList).
 
 encode_bindings(Bindings) ->
@@ -324,21 +345,29 @@ decode_req([_IgnoreSection | Rem], Acc) ->
     decode_req(Rem, Acc).
 
 parse_uri(Uri) ->
-    UriMap = #{path := Path} = uri_string:normalize(Uri, [return_map]),
-    [<<>> | Segments] = binary:split(Path, <<"/">>, [global]),
-    QueryMap = case maps:find(query, UriMap) of
-                   {ok, Query} ->
-                       case uri_string:dissect_query(Query) of
-                           {error, _, _} = Err ->
-                               %%TODO return 400
-                               exit(Err);
-                           QueryList ->
-                               maps:from_list(QueryList)
-                       end;
-                   error ->
-                       #{}
-               end,
-    {Segments, QueryMap}.
+    case uri_string:normalize(Uri, [return_map]) of
+        UriMap = #{path := Path} ->
+            [<<>> | Segments] = binary:split(Path, <<"/">>, [global]),
+            QueryMap = case maps:find(query, UriMap) of
+                           {ok, Query} ->
+                               case uri_string:dissect_query(Query) of
+                                   QueryList
+                                     when is_list(QueryList) ->
+                                       maps:from_list(QueryList);
+                                   {error, Atom, Term} ->
+                                       throw(<<"400">>,
+                                             "failed to dissect query '~ts': ~s ~tp",
+                                             [Query, Atom, Term])
+                               end;
+                           error ->
+                               #{}
+                       end,
+            {Segments, QueryMap};
+        {error, Atom, Term} ->
+            throw(<<"400">>,
+                  "failed to normalize URI '~ts': ~s ~tp",
+                  [Uri, Atom, Term])
+    end.
 
 compose_binding_uri(Src, DstKind, Dst, Key, Args) ->
     SrcQ = uri_string:quote(Src),
@@ -384,3 +413,9 @@ args_hash(Args)
     Bin = <<(erlang:phash2(Args, 1 bsl 32)):32>>,
     base64:encode(Bin, #{mode => urlsafe,
                          padding => false}).
+
+-spec throw(binary(), io:format(), [term()]) -> no_return().
+throw(StatusCode, Format, Data) ->
+    Explanation = lists:flatten(io_lib:format(Format, Data)),
+    rabbit_log:warning(Explanation),
+    throw({StatusCode, Explanation}).
