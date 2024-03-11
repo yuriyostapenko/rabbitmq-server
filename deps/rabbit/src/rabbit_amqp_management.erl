@@ -5,6 +5,8 @@
 
 -export([handle_request/4]).
 
+-type resource_name() :: rabbit_types:exchange_name() | rabbit_types:rabbit_amqqueue_name().
+
 -spec handle_request(binary(), rabbit_types:vhost(), rabbit_types:user(), pid()) -> iolist().
 handle_request(Request, Vhost, User, ConnectionPid) ->
     ReqSections = amqp10_framing:decode_bin(Request),
@@ -31,7 +33,7 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
                                      Vhost,
                                      User,
                                      ConnectionPid)
-                 catch throw:{StatusCode0, Explanation} ->
+                 catch throw:{?MODULE, StatusCode0, Explanation} ->
                            {StatusCode0, [], {utf8, unicode:characters_to_binary(Explanation)}}
                  end,
 
@@ -52,7 +54,7 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
 %% If queue with same fields already exists, return 200 including the queue content.
 %% If queue / exchange with other fields exists, return 409 with explanation about which fields diff.
 handle_http_req(<<"PUT">>,
-                [<<"queues">>, QNameBinQ],
+                [<<"queues">>, QNameBinQuoted],
                 _Query,
                 ReqPayload,
                 Vhost,
@@ -64,7 +66,7 @@ handle_http_req(<<"PUT">>,
       arguments := QArgs
      } = decode_queue(ReqPayload),
     QType = rabbit_amqqueue:get_queue_type(QArgs),
-    QNameBin = uri_string:unquote(QNameBinQ),
+    QNameBin = uri_string:unquote(QNameBinQuoted),
     QName = rabbit_misc:r(Vhost, queue, QNameBin),
     Owner = case Exclusive of
                 true -> ConnPid;
@@ -76,38 +78,55 @@ handle_http_req(<<"PUT">>,
     {<<"201">>, [], null};
 
 handle_http_req(<<"PUT">>,
-                [<<"exchanges">>, XNameBinQ],
+                [<<"exchanges">>, XNameBinQuoted],
                 _Query,
                 ReqPayload,
                 Vhost,
-                #user{username = Username},
+                User = #user{username = Username},
                 _ConnPid) ->
-    #{type := XType,
+    XNameBin = uri_string:unquote(XNameBinQuoted),
+    #{type := XTypeBin,
       durable := Durable,
       auto_delete := AutoDelete,
       internal := Internal,
       arguments := XArgs
      } = decode_exchange(ReqPayload),
-    XNameBin = uri_string:unquote(XNameBinQ),
+    XTypeAtom = try rabbit_exchange:check_type(XTypeBin)
+                catch exit:#amqp_error{explanation = Explanation} ->
+                          throw(<<"400">>, Explanation, [])
+                end,
+    ok = prohibit_default_exchange(XNameBin),
     XName = rabbit_misc:r(Vhost, exchange, XNameBin),
-    CheckedXType = rabbit_exchange:check_type(XType),
-    _X = rabbit_exchange:declare(XName,
-                                 CheckedXType,
-                                 Durable,
-                                 AutoDelete,
-                                 Internal,
-                                 XArgs,
-                                 Username),
-    {<<"201">>, [], null};
+    ok = check_resource_access(XName, configure, User),
+    {StatCode, X} = case rabbit_exchange:lookup(XName) of
+                        {ok, FoundX} ->
+                            {<<"200">>, FoundX};
+                        {error, not_found} ->
+                            ok = prohibit_cr_lf(XNameBin),
+                            ok = prohibit_reserved_amq(XName),
+                            X0 = rabbit_exchange:declare(
+                                   XName, XTypeAtom, Durable, AutoDelete,
+                                   Internal, XArgs, Username),
+                            {<<"201">>, X0}
+                    end,
+    try rabbit_exchange:assert_equivalence(
+          X, XTypeAtom, Durable, AutoDelete, Internal, XArgs) of
+        ok ->
+            %%TODO Include the exchange in the response payload
+            {StatCode, [], null}
+    catch exit:#amqp_error{name = precondition_failed,
+                           explanation = Expl} ->
+              throw(<<"409">>, Expl, [])
+    end;
 
 handle_http_req(<<"DELETE">>,
-                [<<"queues">>, QNameBinQ, <<"messages">>],
+                [<<"queues">>, QNameBinQuoted, <<"messages">>],
                 _Query,
                 null,
                 Vhost,
                 _User,
                 ConnPid) ->
-    QNameBin = uri_string:unquote(QNameBinQ),
+    QNameBin = uri_string:unquote(QNameBinQuoted),
     QName = rabbit_misc:r(Vhost, queue, QNameBin),
     {ok, NumMsgs} = rabbit_amqqueue:with_exclusive_access_or_die(
                       QName, ConnPid,
@@ -118,13 +137,13 @@ handle_http_req(<<"DELETE">>,
     {<<"200">>, [], RespPayload};
 
 handle_http_req(<<"DELETE">>,
-                [<<"queues">>, QNameBinQ],
+                [<<"queues">>, QNameBinQuoted],
                 _Query,
                 null,
                 Vhost,
                 #user{username = Username},
                 ConnPid) ->
-    QNameBin = uri_string:unquote(QNameBinQ),
+    QNameBin = uri_string:unquote(QNameBinQuoted),
     QName = rabbit_misc:r(Vhost, queue, QNameBin),
     {ok, NumMsgs} = rabbit_amqqueue:delete_with(QName, ConnPid, false, false, Username, true),
     RespPayload = {map, [{{utf8, <<"message_count">>}, {ulong, NumMsgs}}]},
@@ -414,8 +433,43 @@ args_hash(Args)
     base64:encode(Bin, #{mode => urlsafe,
                          padding => false}).
 
+prohibit_cr_lf(NameBin) ->
+    case binary:match(NameBin, [<<"\n">>, <<"\r">>]) of
+        nomatch ->
+            ok;
+        _Found ->
+            throw(<<"400">>, <<"Bad name '~ts': \n and \r not allowed">>, [NameBin])
+    end.
+
+prohibit_default_exchange(<<>>) ->
+    throw(<<"403">>, <<"operation not permitted on the default exchange">>, []);
+prohibit_default_exchange(_) ->
+    ok.
+
+-spec prohibit_reserved_amq(resource_name()) -> ok.
+prohibit_reserved_amq(Res = #resource{name = <<"amq.", _/binary>>}) ->
+    throw(<<"403">>,
+          "~ts starts with reserved prefix 'amq.'",
+          [rabbit_misc:rs(Res)]);
+prohibit_reserved_amq(#resource{}) ->
+    ok.
+
+-spec check_resource_access(resource_name(),
+                            rabbit_types:permission_atom(),
+                            rabbit_types:user()) -> ok.
+check_resource_access(Resource, Perm, User) ->
+    try rabbit_access_control:check_resource_access(User, Resource, Perm, #{})
+    catch exit:#amqp_error{name = not_allowed} ->
+              %% For authorization failures, let's be more strict: Close the entire
+              %% AMQP session instead of only returning a HTTP Status Code 403.
+              rabbit_amqp_util:protocol_error(
+                ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS,
+                "~s access refused for user '~ts' to ~ts",
+                [Perm, User, rabbit_misc:rs(Resource)])
+    end.
+
 -spec throw(binary(), io:format(), [term()]) -> no_return().
 throw(StatusCode, Format, Data) ->
     Explanation = lists:flatten(io_lib:format(Format, Data)),
     rabbit_log:warning(Explanation),
-    throw({StatusCode, Explanation}).
+    throw({?MODULE, StatusCode, Explanation}).

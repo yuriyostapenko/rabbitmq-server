@@ -2553,7 +2553,7 @@ handle_method(#'queue.purge'{queue = QueueNameBin},
                         [rabbit_misc:rs(amqqueue:get_name(Q))])
               end
       end);
-handle_method(#'exchange.declare'{exchange    = ExchangeNameBin,
+handle_method(#'exchange.declare'{exchange    = XNameBin,
                                   type        = TypeNameBin,
                                   passive     = false,
                                   durable     = Durable,
@@ -2563,13 +2563,14 @@ handle_method(#'exchange.declare'{exchange    = ExchangeNameBin,
               _ConnPid, AuthzContext, _CollectorPid, VHostPath,
               #user{username = Username} = User) ->
     CheckedType = rabbit_exchange:check_type(TypeNameBin),
-    ExchangeName = rabbit_misc:r(VHostPath, exchange, strip_cr_lf(ExchangeNameBin)),
+    XNameBinStripped = strip_cr_lf(XNameBin),
+    ExchangeName = rabbit_misc:r(VHostPath, exchange, XNameBinStripped),
     check_not_default_exchange(ExchangeName),
     check_configure_permitted(ExchangeName, User, AuthzContext),
     X = case rabbit_exchange:lookup(ExchangeName) of
             {ok, FoundX} -> FoundX;
             {error, not_found} ->
-                _ = check_name('exchange', strip_cr_lf(ExchangeNameBin)),
+                _ = check_name('exchange', XNameBinStripped),
                 AeKey = <<"alternate-exchange">>,
                 case rabbit_misc:r_arg(VHostPath, exchange, Args, AeKey) of
                     undefined -> ok;

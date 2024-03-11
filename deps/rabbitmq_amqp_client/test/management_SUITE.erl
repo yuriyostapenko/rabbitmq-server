@@ -42,7 +42,11 @@ groups() ->
        exchange_defaults,
        bad_uri,
        bad_queue_property,
-       bad_exchange_property
+       bad_exchange_property,
+       bad_exchange_type,
+       declare_default_exchange,
+       declare_exchange_line_feed,
+       declare_exchange_inequivalent_fields
       ]}
     ].
 
@@ -77,12 +81,7 @@ end_per_testcase(Testcase, Config) ->
     rabbit_ct_helpers:testcase_finished(Config, Testcase).
 
 all_management_operations(Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(
-                       Session, <<"my-link-pair">>),
-
+    Init = {_, Session, LinkPair} = init(Config),
     QName = <<"my 🐇"/utf8>>,
     QProps = #{name => QName,
                durable => true,
@@ -189,16 +188,10 @@ all_management_operations(Config) ->
     ?assertEqual({ok, #{message_count => 0}},
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
 
-    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
-    ok = amqp10_client:end_session(Session),
-    ok = amqp10_client:close_connection(Connection).
+    ok = cleanup(Init).
 
 queue_defaults(Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my-link-pair">>),
-
+    Init = {_, _, LinkPair} = init(Config),
     QName = atom_to_binary(?FUNCTION_NAME),
     {ok, _} = rabbitmq_amqp_client:declare_queue(LinkPair, #{name => QName}),
     [Q] = rpc(Config, rabbit_amqqueue, list, []),
@@ -208,16 +201,10 @@ queue_defaults(Config) ->
     ?assertEqual([], rpc(Config, amqqueue, get_arguments, [Q])),
 
     {ok, _} = rabbitmq_amqp_client:delete_queue(LinkPair, QName),
-    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
-    ok = amqp10_client:end_session(Session),
-    ok = amqp10_client:close_connection(Connection).
+    ok = cleanup(Init).
 
 queue_properties(Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my-link-pair">>),
-
+    Init = {_, _, LinkPair} = init(Config),
     QName = atom_to_binary(?FUNCTION_NAME),
     {ok, _} = rabbitmq_amqp_client:declare_queue(LinkPair, #{name => QName,
                                                              durable => false,
@@ -229,16 +216,10 @@ queue_properties(Config) ->
     ?assert(rpc(Config, amqqueue, is_auto_delete, [Q])),
 
     {ok, _} = rabbitmq_amqp_client:delete_queue(LinkPair, QName),
-    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
-    ok = amqp10_client:end_session(Session),
-    ok = amqp10_client:close_connection(Connection).
+    ok = cleanup(Init).
 
 exchange_defaults(Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my-link-pair">>),
-
+    Init = {_, _, LinkPair} = init(Config),
     XName = atom_to_binary(?FUNCTION_NAME),
     ok = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName}),
     {ok, Exchange} = rpc(Config, rabbit_exchange, lookup, [rabbit_misc:r(<<"/">>, exchange, XName)]),
@@ -250,16 +231,10 @@ exchange_defaults(Config) ->
                  Exchange),
 
     ok = rabbitmq_amqp_client:delete_exchange(LinkPair, XName),
-    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
-    ok = amqp10_client:end_session(Session),
-    ok = amqp10_client:close_connection(Connection).
+    ok = cleanup(Init).
 
 queue_binding_args(Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my link pair">>),
-
+    Init = {_, Session, LinkPair} = init(Config),
     QName = <<"my queue ~!@#$%^&*()_+🙈`-=[]\;',./"/utf8>>,
     Q = #{name => QName,
           durable => false,
@@ -307,18 +282,11 @@ queue_binding_args(Config) ->
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
 
     ok = amqp10_client:detach_link(Sender),
-    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
-    ok = amqp10_client:end_session(Session),
-    ok = amqp10_client:close_connection(Connection).
+    ok = cleanup(Init).
 
 bad_uri(Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair = #link_pair{outgoing_link = OutgoingLink,
-                               incoming_link = IncomingLink}
-    } = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my link pair">>),
-
+    Init = {_, _, #link_pair{outgoing_link = OutgoingLink,
+                             incoming_link = IncomingLink}} = init(Config),
     BadUri = <<"👎"/utf8>>,
     Correlation = <<1, 2, 3>>,
     Properties = #{subject => <<"GET">>,
@@ -341,10 +309,7 @@ bad_uri(Config) ->
                    amqp10_msg:body(Response))
     after 5000 -> ct:fail({missing_message, ?LINE})
     end,
-
-    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
-    ok = amqp10_client:end_session(Session),
-    ok = amqp10_client:close_connection(Connection).
+    ok = cleanup(Init).
 
 bad_queue_property(Config) ->
     bad_property(<<"queue">>, Config).
@@ -353,13 +318,8 @@ bad_exchange_property(Config) ->
     bad_property(<<"exchange">>, Config).
 
 bad_property(Kind, Config) ->
-    OpnConf = connection_config(Config),
-    {ok, Connection} = amqp10_client:open_connection(OpnConf),
-    {ok, Session} = amqp10_client:begin_session_sync(Connection),
-    {ok, LinkPair = #link_pair{outgoing_link = OutgoingLink,
-                               incoming_link = IncomingLink}
-    } = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my link pair">>),
-
+    Init = {_, _, #link_pair{outgoing_link = OutgoingLink,
+                             incoming_link = IncomingLink}} = init(Config),
     Correlation = <<1>>,
     Properties = #{subject => <<"PUT">>,
                    to => <<$/, Kind/binary, "s/my-object">>,
@@ -382,7 +342,67 @@ bad_property(Kind, Config) ->
                    amqp10_msg:body(Response))
     after 5000 -> ct:fail({missing_message, ?LINE})
     end,
+    ok = cleanup(Init).
 
+bad_exchange_type(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    UnknownXType = <<"🤷"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => <<"e1">>,
+                                                                      type => UnknownXType}),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"unknown exchange type '", UnknownXType/binary, "'">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+declare_default_exchange(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    DefaultX = <<"">>,
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => DefaultX}),
+    ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+declare_exchange_line_feed(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"🤠\n😱"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName}),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"Bad name '", XName/binary, "': \n and \r not allowed">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+declare_exchange_inequivalent_fields(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"👌"/utf8>>,
+    ok = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName,
+                                                           type => <<"direct">>}),
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName,
+                                                                      type => <<"fanout">>}),
+    ?assertMatch(#{subject := <<"409">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"inequivalent arg 'type' for exchange '", XName/binary, "' in vhost '/': received 'fanout' but current is 'direct'">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+declare_exchange_amq_prefix(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"amq.🎇"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName}),
+    ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"exchange '", XName/binary, "' in vhost '/' "
+                                       "starts with reserved prefix 'amq.'">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+init(Config) ->
+    OpnConf = connection_config(Config),
+    {ok, Connection} = amqp10_client:open_connection(OpnConf),
+    {ok, Session} = amqp10_client:begin_session_sync(Connection),
+    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"my link pair">>),
+    {Connection, Session, LinkPair}.
+
+cleanup({Connection, Session, LinkPair}) ->
     ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
     ok = amqp10_client:end_session(Session),
     ok = amqp10_client:close_connection(Connection).
