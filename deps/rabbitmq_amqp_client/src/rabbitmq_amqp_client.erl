@@ -347,7 +347,7 @@ declare_exchange(LinkPair, ExchangeProperties) ->
     case request(LinkPair, Props, Body) of
         {ok, Resp} ->
             case amqp10_msg:properties(Resp) of
-                #{subject := <<"201">>} ->
+                #{subject := <<"204">>} ->
                     #'v1_0.amqp_value'{content = null} = amqp10_msg:body(Resp),
                     ok;
                 _ ->

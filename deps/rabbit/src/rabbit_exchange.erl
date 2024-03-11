@@ -94,7 +94,7 @@ serial(X) ->
 -spec declare
         (name(), type(), boolean(), boolean(), boolean(),
          rabbit_framing:amqp_table(), rabbit_types:username())
-        -> rabbit_types:exchange() | {error, term()}.
+        -> rabbit_types:exchange().
 
 declare(XName, Type, Durable, AutoDelete, Internal, Args, Username) ->
     X = rabbit_exchange_decorator:set(
@@ -123,9 +123,7 @@ declare(XName, Type, Durable, AutoDelete, Internal, Args, Username) ->
                     rabbit_event:notify(exchange_created, info(Exchange)),
                     Exchange;
                 {existing, Exchange} ->
-                    Exchange;
-                Err ->
-                    Err
+                    Exchange
             end;
         _ ->
             rabbit_log:warning("ignoring exchange.declare for exchange ~tp,

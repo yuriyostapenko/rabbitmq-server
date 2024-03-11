@@ -98,22 +98,20 @@ handle_http_req(<<"PUT">>,
     ok = prohibit_default_exchange(XNameBin),
     XName = rabbit_misc:r(Vhost, exchange, XNameBin),
     ok = check_resource_access(XName, configure, User),
-    {StatCode, X} = case rabbit_exchange:lookup(XName) of
-                        {ok, FoundX} ->
-                            {<<"200">>, FoundX};
-                        {error, not_found} ->
-                            ok = prohibit_cr_lf(XNameBin),
-                            ok = prohibit_reserved_amq(XName),
-                            X0 = rabbit_exchange:declare(
-                                   XName, XTypeAtom, Durable, AutoDelete,
-                                   Internal, XArgs, Username),
-                            {<<"201">>, X0}
-                    end,
+    X = case rabbit_exchange:lookup(XName) of
+            {ok, FoundX} ->
+                FoundX;
+            {error, not_found} ->
+                ok = prohibit_cr_lf(XNameBin),
+                ok = prohibit_reserved_amq(XName),
+                rabbit_exchange:declare(
+                  XName, XTypeAtom, Durable, AutoDelete,
+                  Internal, XArgs, Username)
+        end,
     try rabbit_exchange:assert_equivalence(
           X, XTypeAtom, Durable, AutoDelete, Internal, XArgs) of
         ok ->
-            %%TODO Include the exchange in the response payload
-            {StatCode, [], null}
+            {<<"204">>, [], null}
     catch exit:#amqp_error{name = precondition_failed,
                            explanation = Expl} ->
               throw(<<"409">>, Expl, [])
