@@ -47,7 +47,11 @@ groups() ->
        vhost_absent,
        vhost_connection_limit,
        user_connection_limit,
-       vhost_queue_limit
+       vhost_queue_limit,
+
+       %% AMQP Management operations against HTTP API v2
+       declare_exchange,
+       delete_exchange
       ]
      }
     ].
@@ -536,6 +540,46 @@ vhost_queue_limit(Config) ->
     ok = close_connection_sync(C1),
     ok = close_connection_sync(C2),
     ok = rabbit_ct_broker_helpers:clear_vhost_limit(Config, 0, Vhost).
+
+declare_exchange(Config) ->
+    {Conn, _Session, LinkPair} = init_pair(Config),
+    XName = <<"📮"/utf8>>,
+    ExpectedErr = error_unauthorized(
+                    <<"configure access to exchange '", XName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{})),
+    ok = close_connection_sync(Conn).
+
+delete_exchange(Config) ->
+    {Conn1, _, LinkPair1} = init_pair(Config),
+    XName = <<"📮"/utf8>>,
+    ok = set_permissions(Config, XName, <<>>, <<>>),
+    ok = rabbitmq_amqp_client:declare_exchange(LinkPair1, XName, #{}),
+    ok = clear_permissions(Config),
+    ExpectedErr = error_unauthorized(
+                    <<"configure access to exchange '", XName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:delete_exchange(LinkPair1, XName)),
+    ok = close_connection_sync(Conn1),
+
+    ok = set_permissions(Config, XName, <<>>, <<>>),
+    Init = {_, _, LinkPair2} = init_pair(Config),
+    ok = rabbitmq_amqp_client:delete_exchange(LinkPair2, XName),
+    ok = cleanup_pair(Init).
+
+init_pair(Config) ->
+    OpnConf = connection_config(Config),
+    {ok, Connection} = amqp10_client:open_connection(OpnConf),
+    {ok, Session} = amqp10_client:begin_session_sync(Connection),
+    {ok, LinkPair} = rabbitmq_amqp_client:attach_management_link_pair_sync(Session, <<"mgmt link pair">>),
+    {Connection, Session, LinkPair}.
+
+cleanup_pair({Connection, Session, LinkPair}) ->
+    ok = rabbitmq_amqp_client:detach_management_link_pair_sync(LinkPair),
+    ok = amqp10_client:end_session(Session),
+    ok = amqp10_client:close_connection(Connection).
 
 connection_config(Config) ->
     Vhost = ?config(test_vhost, Config),

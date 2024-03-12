@@ -148,22 +148,19 @@ handle_http_req(<<"DELETE">>,
     {<<"200">>, [], RespPayload};
 
 handle_http_req(<<"DELETE">>,
-                [<<"exchanges">>, XNameBinQ],
+                [<<"exchanges">>, XNameBinQuoted],
                 _Query,
                 null,
                 Vhost,
-                #user{username = Username},
+                User = #user{username = Username},
                 _ConnPid) ->
-    XNameBin = uri_string:unquote(XNameBinQ),
+    XNameBin = uri_string:unquote(XNameBinQuoted),
     XName = rabbit_misc:r(Vhost, exchange, XNameBin),
-    ok = case rabbit_exchange:delete(XName, false, Username) of
-             ok ->
-                 ok;
-             {error, not_found} ->
-                 ok
-                 %% %% TODO return deletion failure
-                 %% {error, in_use} ->
-         end,
+    ok = prohibit_cr_lf(XNameBin),
+    ok = prohibit_default_exchange(XNameBin),
+    ok = prohibit_reserved_amq(XName),
+    ok = check_resource_access(XName, configure, User),
+    _ = rabbit_exchange:delete(XName, false, Username),
     {<<"204">>, [], null};
 
 handle_http_req(<<"POST">>,
@@ -457,13 +454,12 @@ prohibit_reserved_amq(#resource{}) ->
                             rabbit_types:user()) -> ok.
 check_resource_access(Resource, Perm, User) ->
     try rabbit_access_control:check_resource_access(User, Resource, Perm, #{})
-    catch exit:#amqp_error{name = not_allowed} ->
+    catch exit:#amqp_error{name = access_refused,
+                           explanation = Explanation} ->
               %% For authorization failures, let's be more strict: Close the entire
-              %% AMQP session instead of only returning a HTTP Status Code 403.
+              %% AMQP session instead of only returning an HTTP Status Code 403.
               rabbit_amqp_util:protocol_error(
-                ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS,
-                "~s access refused for user '~ts' to ~ts",
-                [Perm, User, rabbit_misc:rs(Resource)])
+                ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS, Explanation, [])
     end.
 
 -spec throw(binary(), io:format(), [term()]) -> no_return().

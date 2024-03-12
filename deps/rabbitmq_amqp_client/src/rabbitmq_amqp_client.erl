@@ -13,8 +13,8 @@
 
 -export[attach_management_link_pair_sync/2,
         detach_management_link_pair_sync/1,
-        declare_queue/2,
-        declare_exchange/2,
+        declare_queue/3,
+        declare_exchange/3,
         bind_queue/5,
         bind_exchange/5,
         unbind_queue/5,
@@ -61,7 +61,8 @@ attach_management_link_pair_sync(Session, Name) ->
         {ok, IncomingRef} ?= attach(Session, IncomingAttachArgs),
         ok ?= await_attached(OutgoingRef),
         ok ?= await_attached(IncomingRef),
-        {ok, #link_pair{outgoing_link = OutgoingRef,
+        {ok, #link_pair{session = Session,
+                        outgoing_link = OutgoingRef,
                         incoming_link = IncomingRef}}
     end.
 
@@ -117,28 +118,26 @@ await_detached(Ref) ->
               {error, timeout}
     end.
 
--spec declare_queue(link_pair(), queue_properties()) ->
+-spec declare_queue(link_pair(), binary(), queue_properties()) ->
     {ok, map()} | {error, term()}.
-declare_queue(LinkPair, QueueProperties) ->
-    {QName, Body0} = maps:fold(
-                       fun(name, V, {undefined, L}) when is_binary(V) ->
-                               {V, L};
-                          (durable, V, {N, L}) when is_boolean(V) ->
-                               {N, [{{utf8, <<"durable">>}, {boolean, V}} | L]};
-                          (exclusive, V, {N, L}) when is_boolean(V) ->
-                               {N, [{{utf8, <<"exclusive">>}, {boolean, V}} | L]};
-                          (auto_delete, V, {N, L}) when is_boolean(V) ->
-                               {N, [{{utf8, <<"auto_delete">>}, {boolean, V}} | L]};
-                          (arguments, V, {N, L0}) ->
-                               KVList = maps:fold(
-                                          fun(K = <<"x-", _/binary>>, TaggedVal = {T, _}, L)
-                                                when is_atom(T) ->
-                                                  [{{utf8, K}, TaggedVal} | L]
-                                          end, [], V),
-                               {N, [{{utf8, <<"arguments">>}, {map, KVList}} | L0]}
-                       end, {undefined, []}, QueueProperties),
+declare_queue(LinkPair, QueueName, QueueProperties) ->
+    Body0 = maps:fold(
+              fun(durable, V, L) when is_boolean(V) ->
+                      [{{utf8, <<"durable">>}, {boolean, V}} | L];
+                 (exclusive, V, L) when is_boolean(V) ->
+                      [{{utf8, <<"exclusive">>}, {boolean, V}} | L];
+                 (auto_delete, V, L) when is_boolean(V) ->
+                      [{{utf8, <<"auto_delete">>}, {boolean, V}} | L];
+                 (arguments, V, L) ->
+                      KVList = maps:fold(
+                                 fun(K = <<"x-", _/binary>>, TaggedVal = {T, _}, L0)
+                                       when is_atom(T) ->
+                                         [{{utf8, K}, TaggedVal} | L0]
+                                 end, [], V),
+                      [{{utf8, <<"arguments">>}, {map, KVList}} | L]
+              end, [], QueueProperties),
     Body = {map, Body0},
-    QNameQuoted = uri_string:quote(QName),
+    QNameQuoted = uri_string:quote(QueueName),
     Props = #{subject => <<"PUT">>,
               to => <<"/queues/", QNameQuoted/binary>>},
 
@@ -316,31 +315,29 @@ purge_or_delete_queue(LinkPair, QueueName, PathSuffix) ->
             Err
     end.
 
--spec declare_exchange(link_pair(), exchange_properties()) ->
+-spec declare_exchange(link_pair(), binary(), exchange_properties()) ->
     ok | {error, term()}.
-declare_exchange(LinkPair, ExchangeProperties) ->
-    {XName, Body0} = maps:fold(
-                       fun(name, V, {undefined, L}) when is_binary(V) ->
-                               {V, L};
-                          (type, V, {N, L}) when is_binary(V) ->
-                               {N, [{{utf8, <<"type">>}, {utf8, V}} | L]};
-                          (durable, V, {N, L}) when is_boolean(V) ->
-                               {N, [{{utf8, <<"durable">>}, {boolean, V}} | L]};
-                          (auto_delete, V, {N, L}) when is_boolean(V) ->
-                               {N, [{{utf8, <<"auto_delete">>}, {boolean, V}} | L]};
-                          (internal, V, {N, L}) when is_boolean(V) ->
-                               {N, [{{utf8, <<"internal">>}, {boolean, V}} | L]};
-                          (arguments, V, {N, L0}) ->
-                               KVList = maps:fold(
-                                          fun(K = <<"x-", _/binary>>, TaggedVal = {T, _}, L)
-                                                when is_atom(T) ->
-                                                  [{{utf8, K}, TaggedVal} | L]
-                                          end, [], V),
-                               {N, [{{utf8, <<"arguments">>}, {map, KVList}} | L0]}
-                       end, {undefined, []}, ExchangeProperties),
+declare_exchange(LinkPair, ExchangeName, ExchangeProperties) ->
+    Body0 = maps:fold(
+              fun(type, V, L) when is_binary(V) ->
+                      [{{utf8, <<"type">>}, {utf8, V}} | L];
+                 (durable, V, L) when is_boolean(V) ->
+                      [{{utf8, <<"durable">>}, {boolean, V}} | L];
+                 (auto_delete, V, L) when is_boolean(V) ->
+                      [{{utf8, <<"auto_delete">>}, {boolean, V}} | L];
+                 (internal, V, L) when is_boolean(V) ->
+                      [{{utf8, <<"internal">>}, {boolean, V}} | L];
+                 (arguments, V, L) ->
+                      KVList = maps:fold(
+                                 fun(K = <<"x-", _/binary>>, TaggedVal = {T, _}, L0)
+                                       when is_atom(T) ->
+                                         [{{utf8, K}, TaggedVal} | L0]
+                                 end, [], V),
+                      [{{utf8, <<"arguments">>}, {map, KVList}} | L]
+              end, [], ExchangeProperties),
     Body = {map, Body0},
 
-    XNameQuoted = uri_string:quote(XName),
+    XNameQuoted = uri_string:quote(ExchangeName),
     Props = #{subject => <<"PUT">>,
               to => <<"/exchanges/", XNameQuoted/binary>>},
 
@@ -377,7 +374,8 @@ delete_exchange(LinkPair, ExchangeName) ->
 
 -spec request(link_pair(), amqp10_msg:amqp10_properties(), amqp10_prim()) ->
     {ok, Response :: amqp10_msg:amqp10_msg()} | {error, term()}.
-request(#link_pair{outgoing_link = OutgoingLink,
+request(#link_pair{session = Session,
+                   outgoing_link = OutgoingLink,
                    incoming_link = IncomingLink}, Properties, Body) ->
     MessageId = message_id(),
     Properties1 = Properties#{message_id => {binary, MessageId},
@@ -389,9 +387,11 @@ request(#link_pair{outgoing_link = OutgoingLink,
         ok ->
             receive {amqp10_msg, IncomingLink, Response} ->
                         #{correlation_id := MessageId} = amqp10_msg:properties(Response),
-                        {ok, Response}
+                        {ok, Response};
+                    {amqp10_event, {session, Session, {ended, Reason}}} ->
+                        {error, {session_ended, Reason}}
             after ?TIMEOUT ->
-                      {error, response_timeout}
+                      {error, timeout}
             end;
         Err ->
             Err

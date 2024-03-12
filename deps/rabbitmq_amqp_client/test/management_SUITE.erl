@@ -45,8 +45,12 @@ groups() ->
        bad_exchange_property,
        bad_exchange_type,
        declare_default_exchange,
+       declare_exchange_amq_prefix,
        declare_exchange_line_feed,
-       declare_exchange_inequivalent_fields
+       declare_exchange_inequivalent_fields,
+       delete_default_exchange,
+       delete_exchange_amq_prefix,
+       delete_exchange_carriage_return
       ]}
     ].
 
@@ -83,12 +87,11 @@ end_per_testcase(Testcase, Config) ->
 all_management_operations(Config) ->
     Init = {_, Session, LinkPair} = init(Config),
     QName = <<"my 🐇"/utf8>>,
-    QProps = #{name => QName,
-               durable => true,
+    QProps = #{durable => true,
                exclusive => false,
                auto_delete => false,
                arguments => #{<<"x-queue-type">> => {symbol, <<"quorum">>}}},
-    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QProps),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, QProps),
 
     [Q] = rpc(Config, rabbit_amqqueue, list, []),
     ?assert(rpc(Config, amqqueue, is_durable, [Q])),
@@ -124,13 +127,12 @@ all_management_operations(Config) ->
     ok = wait_for_settlement(DTag3, released),
 
     XName = <<"my fanout exchange 🥳"/utf8>>,
-    XProps = #{name => XName,
-               type => <<"fanout">>,
+    XProps = #{type => <<"fanout">>,
                durable => false,
                auto_delete => true,
                internal => false,
                arguments => #{<<"x-📥"/utf8>> => {utf8, <<"📮"/utf8>>}}},
-    ?assertEqual(ok, rabbitmq_amqp_client:declare_exchange(LinkPair, XProps)),
+    ?assertEqual(ok, rabbitmq_amqp_client:declare_exchange(LinkPair, XName, XProps)),
 
     {ok, Exchange} = rpc(Config, rabbit_exchange, lookup, [rabbit_misc:r(<<"/">>, exchange, XName)]),
     ?assertMatch(#exchange{type = fanout,
@@ -193,7 +195,7 @@ all_management_operations(Config) ->
 queue_defaults(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     QName = atom_to_binary(?FUNCTION_NAME),
-    {ok, _} = rabbitmq_amqp_client:declare_queue(LinkPair, #{name => QName}),
+    {ok, _} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{}),
     [Q] = rpc(Config, rabbit_amqqueue, list, []),
     ?assert(rpc(Config, amqqueue, is_durable, [Q])),
     ?assertNot(rpc(Config, amqqueue, is_exclusive, [Q])),
@@ -206,10 +208,9 @@ queue_defaults(Config) ->
 queue_properties(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     QName = atom_to_binary(?FUNCTION_NAME),
-    {ok, _} = rabbitmq_amqp_client:declare_queue(LinkPair, #{name => QName,
-                                                             durable => false,
-                                                             exclusive => true,
-                                                             auto_delete => true}),
+    {ok, _} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{durable => false,
+                                                                    exclusive => true,
+                                                                    auto_delete => true}),
     [Q] = rpc(Config, rabbit_amqqueue, list, []),
     ?assertNot(rpc(Config, amqqueue, is_durable, [Q])),
     ?assert(rpc(Config, amqqueue, is_exclusive, [Q])),
@@ -221,7 +222,7 @@ queue_properties(Config) ->
 exchange_defaults(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     XName = atom_to_binary(?FUNCTION_NAME),
-    ok = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName}),
+    ok = rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{}),
     {ok, Exchange} = rpc(Config, rabbit_exchange, lookup, [rabbit_misc:r(<<"/">>, exchange, XName)]),
     ?assertMatch(#exchange{type = direct,
                            durable = true,
@@ -236,12 +237,11 @@ exchange_defaults(Config) ->
 queue_binding_args(Config) ->
     Init = {_, Session, LinkPair} = init(Config),
     QName = <<"my queue ~!@#$%^&*()_+🙈`-=[]\;',./"/utf8>>,
-    Q = #{name => QName,
-          durable => false,
+    Q = #{durable => false,
           exclusive => true,
           auto_delete => false,
           arguments => #{<<"x-queue-type">> => {symbol, <<"classic">>}}},
-    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, Q),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, Q),
 
     Exchange = <<"amq.headers">>,
     BindingKey = <<>>,
@@ -347,8 +347,7 @@ bad_property(Kind, Config) ->
 bad_exchange_type(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     UnknownXType = <<"🤷"/utf8>>,
-    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => <<"e1">>,
-                                                                      type => UnknownXType}),
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, <<"e1">>, #{type => UnknownXType}),
     ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
     ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"unknown exchange type '", UnknownXType/binary, "'">>}},
                  amqp10_msg:body(Resp)),
@@ -357,16 +356,27 @@ bad_exchange_type(Config) ->
 declare_default_exchange(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     DefaultX = <<"">>,
-    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => DefaultX}),
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, DefaultX, #{}),
     ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
     ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+declare_exchange_amq_prefix(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"amq.🎇"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{}),
+    ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"exchange '", XName/binary, "' in vhost '/' "
+                                       "starts with reserved prefix 'amq.'">>}},
                  amqp10_msg:body(Resp)),
     ok = cleanup(Init).
 
 declare_exchange_line_feed(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     XName = <<"🤠\n😱"/utf8>>,
-    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName}),
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{}),
     ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
     ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"Bad name '", XName/binary, "': \n and \r not allowed">>}},
                  amqp10_msg:body(Resp)),
@@ -375,23 +385,41 @@ declare_exchange_line_feed(Config) ->
 declare_exchange_inequivalent_fields(Config) ->
     Init = {_, _, LinkPair} = init(Config),
     XName = <<"👌"/utf8>>,
-    ok = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName,
-                                                           type => <<"direct">>}),
-    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName,
-                                                                      type => <<"fanout">>}),
+    ok = rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{type => <<"direct">>}),
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{type => <<"fanout">>}),
     ?assertMatch(#{subject := <<"409">>}, amqp10_msg:properties(Resp)),
-    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"inequivalent arg 'type' for exchange '", XName/binary, "' in vhost '/': received 'fanout' but current is 'direct'">>}},
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"inequivalent arg 'type' for exchange '", XName/binary,
+                                       "' in vhost '/': received 'fanout' but current is 'direct'">>}},
                  amqp10_msg:body(Resp)),
     ok = cleanup(Init).
 
-declare_exchange_amq_prefix(Config) ->
+delete_default_exchange(Config) ->
     Init = {_, _, LinkPair} = init(Config),
-    XName = <<"amq.🎇"/utf8>>,
-    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, #{name => XName}),
+    DefaultX = <<"">>,
+    {error, Resp} = rabbitmq_amqp_client:delete_exchange(LinkPair, DefaultX),
+    ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+delete_exchange_amq_prefix(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"amq.fanout">>,
+    {error, Resp} = rabbitmq_amqp_client:delete_exchange(LinkPair, XName),
     ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
     ?assertEqual(#'v1_0.amqp_value'{
                     content = {utf8, <<"exchange '", XName/binary, "' in vhost '/' "
                                        "starts with reserved prefix 'amq.'">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+delete_exchange_carriage_return(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"x\rx">>,
+    {error, Resp} = rabbitmq_amqp_client:delete_exchange(LinkPair, XName),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"Bad name '", XName/binary, "': \n and \r not allowed">>}},
                  amqp10_msg:body(Resp)),
     ok = cleanup(Init).
 

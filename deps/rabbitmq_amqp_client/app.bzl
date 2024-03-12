@@ -22,9 +22,10 @@ def all_srcs(name = "all_srcs"):
         srcs = ["src/rabbitmq_amqp_client.erl"],
     )
     filegroup(name = "private_hdrs")
-    filegroup(name = "public_hdrs", srcs = [
-        "include/rabbitmq_amqp_client.hrl",
-    ])
+    filegroup(
+        name = "public_hdrs",
+        srcs = ["include/rabbitmq_amqp_client.hrl"],
+    )
     filegroup(name = "priv")
     filegroup(
         name = "license_files",
