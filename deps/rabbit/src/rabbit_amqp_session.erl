@@ -60,7 +60,9 @@
 -export([start_link/8,
          process_frame/2,
          list_local/0,
-         conserve_resources/3]).
+         conserve_resources/3,
+         check_read_permitted_on_topic/3
+        ]).
 
 -export([init/1,
          terminate/2,
@@ -2589,7 +2591,8 @@ check_topic_authorisation(#exchange{type = topic,
             try rabbit_access_control:check_topic_access(User, Resource, Permission, Context) of
                 ok ->
                     CacheTail = lists:sublist(Cache, ?MAX_PERMISSION_CACHE_SIZE - 1),
-                    put(?TOPIC_PERMISSION_CACHE, [CacheElem | CacheTail])
+                    put(?TOPIC_PERMISSION_CACHE, [CacheElem | CacheTail]),
+                    ok
             catch
                 exit:#amqp_error{name = access_refused,
                                  explanation = Msg} ->

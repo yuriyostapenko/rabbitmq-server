@@ -66,7 +66,8 @@
 -export([list_queue_states/1]).
 
 %% Mgmt HTTP API refactor
--export([handle_method/6]).
+-export([handle_method/6,
+         binding_action/4]).
 
 -import(rabbit_misc, [maps_put_truthy/3]).
 
@@ -1806,9 +1807,10 @@ queue_down_consumer_action(CTag, CMap) ->
         _            -> {recover, ConsumeSpec}
     end.
 
-binding_action(Fun, SourceNameBin0, DestinationType, DestinationNameBin0,
-               RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext,
-               #user{username = Username} = User) ->
+binding_action_with_checks(
+  Action, SourceNameBin0, DestinationType, DestinationNameBin0,
+  RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext,
+  #user{username = Username} = User) ->
     ExchangeNameBin = strip_cr_lf(SourceNameBin0),
     DestinationNameBin = strip_cr_lf(DestinationNameBin0),
     DestinationName = name_to_resource(DestinationType, DestinationNameBin, VHostPath),
@@ -1822,18 +1824,27 @@ binding_action(Fun, SourceNameBin0, DestinationType, DestinationNameBin0,
         {ok, Exchange}     ->
             check_read_permitted_on_topic(Exchange, User, RoutingKey, AuthzContext)
     end,
-    case Fun(#binding{source      = ExchangeName,
-                      destination = DestinationName,
-                      key         = RoutingKey,
-                      args        = Arguments},
-             fun (_X, Q) when ?is_amqqueue(Q) ->
-                     try rabbit_amqqueue:check_exclusive_access(Q, ConnPid)
-                     catch exit:Reason -> {error, Reason}
-                     end;
-                 (_X, #exchange{}) ->
-                     ok
-             end,
-             Username) of
+    Binding = #binding{source = ExchangeName,
+                       destination = DestinationName,
+                       key = RoutingKey,
+                       args = Arguments},
+    binding_action(Action, Binding, Username, ConnPid).
+
+-spec binding_action(add | remove,
+                     rabbit_types:binding(),
+                     rabbit_types:username(),
+                     pid()) -> ok.
+binding_action(Action, Binding, Username, ConnPid) ->
+    case rabbit_binding:Action(
+           Binding,
+           fun (_X, Q) when ?is_amqqueue(Q) ->
+                   try rabbit_amqqueue:check_exclusive_access(Q, ConnPid)
+                   catch exit:Reason -> {error, Reason}
+                   end;
+               (_X, #exchange{}) ->
+                   ok
+           end,
+           Username) of
         {error, {resources_missing, [{not_found, Name} | _]}} ->
             rabbit_amqqueue:not_found(Name);
         {error, {resources_missing, [{absent, Q, Reason} | _]}} ->
@@ -2362,33 +2373,33 @@ handle_method(#'exchange.bind'{destination = DestinationNameBin,
                                routing_key = RoutingKey,
                                arguments   = Arguments},
               ConnPid, AuthzContext, _CollectorId, VHostPath, User) ->
-    binding_action(fun rabbit_binding:add/3,
-                   SourceNameBin, exchange, DestinationNameBin,
-                   RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
+    binding_action_with_checks(
+      add, SourceNameBin, exchange, DestinationNameBin,
+      RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
 handle_method(#'exchange.unbind'{destination = DestinationNameBin,
                                  source      = SourceNameBin,
                                  routing_key = RoutingKey,
                                  arguments   = Arguments},
               ConnPid, AuthzContext, _CollectorId, VHostPath, User) ->
-    binding_action(fun rabbit_binding:remove/3,
-                       SourceNameBin, exchange, DestinationNameBin,
-                       RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
+    binding_action_with_checks(
+      remove, SourceNameBin, exchange, DestinationNameBin,
+      RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
 handle_method(#'queue.unbind'{queue       = QueueNameBin,
                               exchange    = ExchangeNameBin,
                               routing_key = RoutingKey,
                               arguments   = Arguments},
               ConnPid, AuthzContext, _CollectorId, VHostPath, User) ->
-    binding_action(fun rabbit_binding:remove/3,
-                   ExchangeNameBin, queue, QueueNameBin,
-                   RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
+    binding_action_with_checks(
+      remove, ExchangeNameBin, queue, QueueNameBin,
+      RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
 handle_method(#'queue.bind'{queue       = QueueNameBin,
                             exchange    = ExchangeNameBin,
                             routing_key = RoutingKey,
                             arguments   = Arguments},
               ConnPid, AuthzContext, _CollectorId, VHostPath, User) ->
-    binding_action(fun rabbit_binding:add/3,
-                   ExchangeNameBin, queue, QueueNameBin,
-                   RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
+    binding_action_with_checks(
+      add, ExchangeNameBin, queue, QueueNameBin,
+      RoutingKey, Arguments, VHostPath, ConnPid, AuthzContext, User);
 %% Note that all declares to these are effectively passive. If it
 %% exists it by definition has one consumer.
 handle_method(#'queue.declare'{queue   = <<"amq.rabbitmq.reply-to",

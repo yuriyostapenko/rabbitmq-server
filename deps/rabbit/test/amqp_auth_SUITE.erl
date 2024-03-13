@@ -51,7 +51,15 @@ groups() ->
 
        %% AMQP Management operations against HTTP API v2
        declare_exchange,
-       delete_exchange
+       delete_exchange,
+       bind_queue_source,
+       bind_queue_destination,
+       bind_exchange_source,
+       bind_exchange_destination,
+       bind_to_topic_exchange,
+       unbind_queue_source,
+       unbind_queue_target,
+       unbind_from_topic_exchange
       ]
      }
     ].
@@ -568,6 +576,143 @@ delete_exchange(Config) ->
     Init = {_, _, LinkPair2} = init_pair(Config),
     ok = rabbitmq_amqp_client:delete_exchange(LinkPair2, XName),
     ok = cleanup_pair(Init).
+
+bind_queue_source(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    QName = atom_to_binary(?FUNCTION_NAME),
+    %% missing read permission to source exchange
+    ok = set_permissions(Config, QName, QName, QName),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{}),
+
+    XName = <<"amq.direct">>,
+    ExpectedErr = error_unauthorized(
+                    <<"read access to exchange '", XName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, <<"key">>, #{})),
+    ok = close_connection_sync(Conn).
+
+bind_queue_destination(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    QName = <<"my 🐇"/utf8>>,
+    XName = <<"amq.direct">>,
+    %% missing write permission to destination queue
+    ok = set_permissions(Config, QName, <<>>, XName),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{}),
+
+    ExpectedErr = error_unauthorized(
+                    <<"write access to queue '", QName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, <<"key">>, #{})),
+    ok = close_connection_sync(Conn).
+
+bind_exchange_source(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    SrcXName = <<"amq.fanout">>,
+    DstXName = <<"amq.direct">>,
+    %% missing read permission to source exchange
+    ok = set_permissions(Config, <<>>, DstXName, <<>>),
+
+    ExpectedErr = error_unauthorized(
+                    <<"read access to exchange '", SrcXName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:bind_exchange(LinkPair, DstXName, SrcXName, <<"key">>, #{})),
+    ok = close_connection_sync(Conn).
+
+bind_exchange_destination(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    SrcXName = <<"amq.fanout">>,
+    DstXName = <<"amq.direct">>,
+    %% missing write permission to destination exchange
+    ok = set_permissions(Config, <<>>, <<>>, SrcXName),
+
+    ExpectedErr = error_unauthorized(
+                    <<"write access to exchange '", DstXName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:bind_exchange(LinkPair, DstXName, SrcXName, <<"key">>, #{})),
+    ok = close_connection_sync(Conn).
+
+bind_to_topic_exchange(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    SrcXName = <<"amq.topic">>,
+    DstXName = <<"amq.direct">>,
+    Topic = <<"a.b.🐇"/utf8>>,
+
+    User = ?config(test_user, Config),
+    Vhost = ?config(test_vhost, Config),
+    ok = rabbit_ct_broker_helpers:set_full_permissions(Config, User, Vhost),
+    %% missing read permission to Topic
+    ok = set_topic_permissions(Config, SrcXName, <<".*">>, <<"wrong.topic">>),
+
+    ExpectedErr = error_unauthorized(
+                    <<"read access to topic '", Topic/binary,
+                      "' in exchange 'amq.topic' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:bind_exchange(LinkPair, DstXName, SrcXName, Topic, #{})),
+    ok = close_connection_sync(Conn).
+
+unbind_queue_source(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    QName = BindingKey = atom_to_binary(?FUNCTION_NAME),
+    XName = <<"amq.direct">>,
+    ok = set_permissions(Config, QName, QName, XName),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{}),
+    ok = rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, BindingKey, #{}),
+
+    %% remove read permission to source exchange
+    ok = set_permissions(Config, QName, QName, <<"^$">>),
+    ExpectedErr = error_unauthorized(
+                    <<"read access to exchange '", XName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:unbind_queue(LinkPair, QName, XName, BindingKey, #{})),
+    ok = close_connection_sync(Conn).
+
+unbind_queue_target(Config) ->
+    {Conn, _, LinkPair} = init_pair(Config),
+    QName = BindingKey = atom_to_binary(?FUNCTION_NAME),
+    XName = <<"amq.direct">>,
+    ok = set_permissions(Config, QName, QName, XName),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{}),
+    ok = rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, BindingKey, #{}),
+
+    %% remove write permission to destination queue
+    ok = set_permissions(Config, QName, <<"^$">>, XName),
+    ExpectedErr = error_unauthorized(
+                    <<"write access to queue '", QName/binary,
+                      "' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:unbind_queue(LinkPair, QName, XName, BindingKey, #{})),
+    ok = close_connection_sync(Conn).
+
+unbind_from_topic_exchange(Config) ->
+    Init = {_, _, LinkPair1} = init_pair(Config),
+    SrcXName = <<"amq.topic">>,
+    DstXName = <<"amq.direct">>,
+    Topic = <<"a.b.🐇"/utf8>>,
+
+    User = ?config(test_user, Config),
+    Vhost = ?config(test_vhost, Config),
+    ok = rabbit_ct_broker_helpers:set_full_permissions(Config, User, Vhost),
+    ok = set_topic_permissions(Config, SrcXName, <<"^$">>, Topic),
+    ok = rabbitmq_amqp_client:bind_exchange(LinkPair1, DstXName, SrcXName, Topic, #{}),
+
+    %% remove Topic read permission
+    ok = set_topic_permissions(Config, SrcXName, <<"^$">>, <<"^$">>),
+    %% Start a new connection since topic permissions are cached by the AMQP session process.
+    ok = cleanup_pair(Init),
+    {Conn, _, LinkPair2} = init_pair(Config),
+
+    ExpectedErr = error_unauthorized(
+                    <<"read access to topic '", Topic/binary,
+                      "' in exchange 'amq.topic' in vhost 'test vhost' refused for user 'test user'">>),
+    ?assertEqual({error, {session_ended, ExpectedErr}},
+                 rabbitmq_amqp_client:unbind_exchange(LinkPair2, DstXName, SrcXName, Topic, #{})),
+
+    ok = close_connection_sync(Conn).
 
 init_pair(Config) ->
     OpnConf = connection_config(Config),

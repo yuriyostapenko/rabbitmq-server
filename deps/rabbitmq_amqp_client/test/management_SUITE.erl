@@ -25,6 +25,8 @@
         [rpc/4,
          rpc/5]).
 
+-define(DEFAULT_EXCHANGE, <<>>).
+
 suite() ->
     [{timetrap, {minutes, 3}}].
 
@@ -50,7 +52,13 @@ groups() ->
        declare_exchange_inequivalent_fields,
        delete_default_exchange,
        delete_exchange_amq_prefix,
-       delete_exchange_carriage_return
+       delete_exchange_carriage_return,
+       bind_source_default_exchange,
+       bind_destination_default_exchange,
+       bind_source_line_feed,
+       bind_destination_line_feed,
+       bind_missing_queue,
+       exclusive_queue
       ]}
     ].
 
@@ -92,6 +100,9 @@ all_management_operations(Config) ->
                auto_delete => false,
                arguments => #{<<"x-queue-type">> => {symbol, <<"quorum">>}}},
     {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, QProps),
+    %% This operation should be idempotent.
+    %% TODO uncomment
+    % {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, QProps),
 
     [Q] = rpc(Config, rabbit_amqqueue, list, []),
     ?assert(rpc(Config, amqqueue, is_durable, [Q])),
@@ -111,6 +122,7 @@ all_management_operations(Config) ->
     RoutingKey1 = BindingKey1 = <<"🗝️ 1"/utf8>>,
     SourceExchange = <<"amq.direct">>,
     ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, SourceExchange, BindingKey1, #{})),
+    ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, SourceExchange, BindingKey1, #{})),
     TargetAddr2 = <<"/exchange/", SourceExchange/binary, "/", RoutingKey1/binary>>,
 
     {ok, Sender2} = amqp10_client:attach_sender_link(Session, <<"sender 2">>, TargetAddr2),
@@ -122,6 +134,7 @@ all_management_operations(Config) ->
     ok = wait_for_accepted(DTag2),
 
     ?assertEqual(ok, rabbitmq_amqp_client:unbind_queue(LinkPair, QName, SourceExchange, BindingKey1, #{})),
+    ?assertEqual(ok, rabbitmq_amqp_client:unbind_queue(LinkPair, QName, SourceExchange, BindingKey1, #{})),
     DTag3 = <<"tag 3">>,
     ok = amqp10_client:send_msg(Sender2, amqp10_msg:new(DTag3, <<"not routed">>, false)),
     ok = wait_for_settlement(DTag3, released),
@@ -132,6 +145,7 @@ all_management_operations(Config) ->
                auto_delete => true,
                internal => false,
                arguments => #{<<"x-📥"/utf8>> => {utf8, <<"📮"/utf8>>}}},
+    ?assertEqual(ok, rabbitmq_amqp_client:declare_exchange(LinkPair, XName, XProps)),
     ?assertEqual(ok, rabbitmq_amqp_client:declare_exchange(LinkPair, XName, XProps)),
 
     {ok, Exchange} = rpc(Config, rabbit_exchange, lookup, [rabbit_misc:r(<<"/">>, exchange, XName)]),
@@ -145,6 +159,7 @@ all_management_operations(Config) ->
     TargetAddr3 = <<"/exchange/", XName/binary>>,
     SourceExchange = <<"amq.direct">>,
     ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, <<"ignored">>, #{})),
+    ?assertEqual(ok, rabbitmq_amqp_client:bind_queue(LinkPair, QName, XName, <<"ignored">>, #{})),
 
     {ok, Sender3} = amqp10_client:attach_sender_link(Session, <<"sender 3">>, TargetAddr3),
     ok = wait_for_credit(Sender3),
@@ -157,6 +172,7 @@ all_management_operations(Config) ->
     RoutingKey2 = BindingKey2 = <<"key 2">>,
     BindingArgs = #{<<" 😬 "/utf8>> => {utf8, <<" 😬 "/utf8>>}},
     ?assertEqual(ok, rabbitmq_amqp_client:bind_exchange(LinkPair, XName, SourceExchange, BindingKey2, BindingArgs)),
+    ?assertEqual(ok, rabbitmq_amqp_client:bind_exchange(LinkPair, XName, SourceExchange, BindingKey2, BindingArgs)),
     TargetAddr4 = <<"/exchange/", SourceExchange/binary, "/", RoutingKey2/binary>>,
 
     {ok, Sender4} = amqp10_client:attach_sender_link(Session, <<"sender 4">>, TargetAddr4),
@@ -168,10 +184,12 @@ all_management_operations(Config) ->
     ok = wait_for_accepted(DTag5),
 
     ?assertEqual(ok, rabbitmq_amqp_client:unbind_exchange(LinkPair, XName, SourceExchange, BindingKey2, BindingArgs)),
+    ?assertEqual(ok, rabbitmq_amqp_client:unbind_exchange(LinkPair, XName, SourceExchange, BindingKey2, BindingArgs)),
     DTag6 = <<"tag 6">>,
     ok = amqp10_client:send_msg(Sender4, amqp10_msg:new(DTag6, <<"not routed">>, false)),
     ok = wait_for_settlement(DTag6, released),
 
+    ?assertEqual(ok, rabbitmq_amqp_client:delete_exchange(LinkPair, XName)),
     ?assertEqual(ok, rabbitmq_amqp_client:delete_exchange(LinkPair, XName)),
     %% When we publish the next message, we expect:
     %% 1. that the message is released because the exchange doesn't exist anymore, and
@@ -189,6 +207,11 @@ all_management_operations(Config) ->
 
     ?assertEqual({ok, #{message_count => 0}},
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
+    ?assertEqual({ok, #{message_count => 0}},
+                 rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
+    %%TODO uncomment
+    % ?assertEqual({ok, #{message_count => 0}},
+    %              rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
 
     ok = cleanup(Init).
 
@@ -355,8 +378,7 @@ bad_exchange_type(Config) ->
 
 declare_default_exchange(Config) ->
     Init = {_, _, LinkPair} = init(Config),
-    DefaultX = <<"">>,
-    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, DefaultX, #{}),
+    {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, ?DEFAULT_EXCHANGE, #{}),
     ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
     ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
                  amqp10_msg:body(Resp)),
@@ -378,7 +400,9 @@ declare_exchange_line_feed(Config) ->
     XName = <<"🤠\n😱"/utf8>>,
     {error, Resp} = rabbitmq_amqp_client:declare_exchange(LinkPair, XName, #{}),
     ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
-    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"Bad name '", XName/binary, "': \n and \r not allowed">>}},
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"Bad name '", XName/binary,
+                                       "': line feed and carriage return characters not allowed">>}},
                  amqp10_msg:body(Resp)),
     ok = cleanup(Init).
 
@@ -396,8 +420,7 @@ declare_exchange_inequivalent_fields(Config) ->
 
 delete_default_exchange(Config) ->
     Init = {_, _, LinkPair} = init(Config),
-    DefaultX = <<"">>,
-    {error, Resp} = rabbitmq_amqp_client:delete_exchange(LinkPair, DefaultX),
+    {error, Resp} = rabbitmq_amqp_client:delete_exchange(LinkPair, ?DEFAULT_EXCHANGE),
     ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
     ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
                  amqp10_msg:body(Resp)),
@@ -419,9 +442,100 @@ delete_exchange_carriage_return(Config) ->
     XName = <<"x\rx">>,
     {error, Resp} = rabbitmq_amqp_client:delete_exchange(LinkPair, XName),
     ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
-    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"Bad name '", XName/binary, "': \n and \r not allowed">>}},
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"Bad name '", XName/binary,
+                                       "': line feed and carriage return characters not allowed">>}},
                  amqp10_msg:body(Resp)),
     ok = cleanup(Init).
+
+bind_source_default_exchange(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    QName = <<"👀"/utf8>>,
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair, QName, #{}),
+
+    {error, Resp} = rabbitmq_amqp_client:bind_queue(
+                      LinkPair, QName, ?DEFAULT_EXCHANGE, <<"my binding key">>, #{}),
+    ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
+                 amqp10_msg:body(Resp)),
+
+    {ok, #{}} = rabbitmq_amqp_client:delete_queue(LinkPair, QName),
+    ok = cleanup(Init).
+
+bind_destination_default_exchange(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    {error, Resp} = rabbitmq_amqp_client:bind_exchange(
+                      LinkPair, ?DEFAULT_EXCHANGE, <<"amq.fanout">>, <<"my binding key">>, #{}),
+    ?assertMatch(#{subject := <<"403">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"operation not permitted on the default exchange">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+bind_source_line_feed(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"🤠\n😱"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:bind_exchange(
+                      LinkPair, <<"amq.fanout">>, XName, <<"my binding key">>, #{}),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"Bad name '", XName/binary,
+                                       "': line feed and carriage return characters not allowed">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+bind_destination_line_feed(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    XName = <<"🤠\n😱"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:bind_exchange(
+                      LinkPair, XName, <<"amq.fanout">>, <<"my binding key">>, #{}),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{
+                    content = {utf8, <<"Bad name '", XName/binary,
+                                       "': line feed and carriage return characters not allowed">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+bind_missing_queue(Config) ->
+    Init = {_, _, LinkPair} = init(Config),
+    QName = <<"👀"/utf8>>,
+    {error, Resp} = rabbitmq_amqp_client:bind_queue(
+                      LinkPair, QName, <<"amq.direct">>, <<"my binding key">>, #{}),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    ?assertEqual(#'v1_0.amqp_value'{content = {utf8, <<"no queue '", QName/binary, "' in vhost '/'">>}},
+                 amqp10_msg:body(Resp)),
+    ok = cleanup(Init).
+
+exclusive_queue(Config) ->
+    Init1 = {_, _, LinkPair1} = init(Config),
+    BindingKey = <<"🗝️"/utf8>>,
+    XName = <<"amq.direct">>,
+    QName = <<"🙌"/utf8>>,
+    QProps = #{exclusive => true},
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(LinkPair1, QName, QProps),
+    ok = rabbitmq_amqp_client:bind_queue(LinkPair1, QName, XName, BindingKey, #{}),
+
+    {Conn2, _, LinkPair2} = init(Config),
+    {error, Resp} = rabbitmq_amqp_client:bind_queue(LinkPair2, QName, XName, BindingKey, #{}),
+    ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    #'v1_0.amqp_value'{content = {utf8, Reason}} = amqp10_msg:body(Resp),
+    ?assertMatch(<<"cannot obtain exclusive access to locked queue '",
+                   QName:(byte_size(QName))/binary, "' in vhost '/'.", _/binary >>,
+                 Reason),
+    ok = amqp10_client:close_connection(Conn2),
+
+    %% TODO uncomment
+    % {Conn3, _, LinkPair3} = init(Config),
+    % {error, Resp} = rabbitmq_amqp_client:delete_queue(LinkPair3, QName),
+    % ?assertMatch(#{subject := <<"400">>}, amqp10_msg:properties(Resp)),
+    % #'v1_0.amqp_value'{content = {utf8, Reason}} = amqp10_msg:body(Resp),
+    % ?assertMatch(<<"cannot obtain exclusive access to locked queue '",
+    %                QName:(byte_size(QName))/binary, "' in vhost '/'.", _/binary >>,
+    %              Reason),
+    % ok = amqp10_client:close_connection(Conn3),
+
+    ok = rabbitmq_amqp_client:unbind_queue(LinkPair1, QName, XName, BindingKey, #{}),
+    {ok, #{}} = rabbitmq_amqp_client:delete_queue(LinkPair1, QName),
+    ok = cleanup(Init1).
 
 init(Config) ->
     OpnConf = connection_config(Config),

@@ -24,7 +24,6 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
     } = decode_req(ReqSections, {undefined, undefined}),
 
     {StatusCode,
-     RespAppProps0,
      RespBody} = try {PathSegments, QueryMap} = parse_uri(HttpRequestTarget),
                      handle_http_req(HttpMethod,
                                      PathSegments,
@@ -34,7 +33,9 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
                                      User,
                                      ConnectionPid)
                  catch throw:{?MODULE, StatusCode0, Explanation} ->
-                           {StatusCode0, [], {utf8, unicode:characters_to_binary(Explanation)}}
+                           rabbit_log:warning("request ~ts ~ts failed: ~ts",
+                                              [HttpMethod, HttpRequestTarget, Explanation]),
+                           {StatusCode0, {utf8, Explanation}}
                  end,
 
     RespProps = #'v1_0.properties'{
@@ -44,7 +45,9 @@ handle_request(Request, Vhost, User, ConnectionPid) ->
                    %% [HTTP over AMQP WD 06 §5.1]
                    correlation_id = MessageId},
     RespAppProps = #'v1_0.application_properties'{
-                      content = [{{utf8, <<"http:response">>}, {utf8, <<"1.1">>}} | RespAppProps0]},
+                      content = [
+                                 {{utf8, <<"http:response">>}, {utf8, <<"1.1">>}}
+                                ]},
     RespDataSect = #'v1_0.amqp_value'{content = RespBody},
     RespSections = [RespProps, RespAppProps, RespDataSect],
     [amqp10_framing:encode_bin(Sect) || Sect <- RespSections].
@@ -75,7 +78,7 @@ handle_http_req(<<"PUT">>,
     Q0 = amqqueue:new(QName, none, Durable, AutoDelete, Owner,
                       QArgs, Vhost, #{user => Username}, QType),
     {new, _Q} = rabbit_queue_type:declare(Q0, node()),
-    {<<"201">>, [], null};
+    {<<"201">>, null};
 
 handle_http_req(<<"PUT">>,
                 [<<"exchanges">>, XNameBinQuoted],
@@ -95,8 +98,8 @@ handle_http_req(<<"PUT">>,
                 catch exit:#amqp_error{explanation = Explanation} ->
                           throw(<<"400">>, Explanation, [])
                 end,
-    ok = prohibit_default_exchange(XNameBin),
     XName = rabbit_misc:r(Vhost, exchange, XNameBin),
+    ok = prohibit_default_exchange(XName),
     ok = check_resource_access(XName, configure, User),
     X = case rabbit_exchange:lookup(XName) of
             {ok, FoundX} ->
@@ -111,7 +114,7 @@ handle_http_req(<<"PUT">>,
     try rabbit_exchange:assert_equivalence(
           X, XTypeAtom, Durable, AutoDelete, Internal, XArgs) of
         ok ->
-            {<<"204">>, [], null}
+            {<<"204">>, null}
     catch exit:#amqp_error{name = precondition_failed,
                            explanation = Expl} ->
               throw(<<"409">>, Expl, [])
@@ -132,7 +135,7 @@ handle_http_req(<<"DELETE">>,
                               rabbit_queue_type:purge(Q)
                       end),
     RespPayload = {map, [{{utf8, <<"message_count">>}, {ulong, NumMsgs}}]},
-    {<<"200">>, [], RespPayload};
+    {<<"200">>, RespPayload};
 
 handle_http_req(<<"DELETE">>,
                 [<<"queues">>, QNameBinQuoted],
@@ -145,7 +148,7 @@ handle_http_req(<<"DELETE">>,
     QName = rabbit_misc:r(Vhost, queue, QNameBin),
     {ok, NumMsgs} = rabbit_amqqueue:delete_with(QName, ConnPid, false, false, Username, true),
     RespPayload = {map, [{{utf8, <<"message_count">>}, {ulong, NumMsgs}}]},
-    {<<"200">>, [], RespPayload};
+    {<<"200">>, RespPayload};
 
 handle_http_req(<<"DELETE">>,
                 [<<"exchanges">>, XNameBinQuoted],
@@ -157,19 +160,19 @@ handle_http_req(<<"DELETE">>,
     XNameBin = uri_string:unquote(XNameBinQuoted),
     XName = rabbit_misc:r(Vhost, exchange, XNameBin),
     ok = prohibit_cr_lf(XNameBin),
-    ok = prohibit_default_exchange(XNameBin),
+    ok = prohibit_default_exchange(XName),
     ok = prohibit_reserved_amq(XName),
     ok = check_resource_access(XName, configure, User),
     _ = rabbit_exchange:delete(XName, false, Username),
-    {<<"204">>, [], null};
+    {<<"204">>, null};
 
 handle_http_req(<<"POST">>,
                 [<<"bindings">>],
                 _Query,
                 ReqPayload,
                 Vhost,
-                #user{username = Username},
-                _ConnPid) ->
+                User = #user{username = Username},
+                ConnPid) ->
     #{source := SrcXNameBin,
       binding_key := BindingKey,
       arguments := Args} = BindingMap = decode_binding(ReqPayload),
@@ -181,34 +184,37 @@ handle_http_req(<<"POST">>,
                             end,
     SrcXName = rabbit_misc:r(Vhost, exchange, SrcXNameBin),
     DstName = rabbit_misc:r(Vhost, DstKind, DstNameBin),
+    ok = binding_checks(SrcXName, DstName, BindingKey, User),
     Binding = #binding{source      = SrcXName,
                        destination = DstName,
                        key         = BindingKey,
                        args        = Args},
-    %%TODO If the binding already exists, return 303 with location.
-    ok = rabbit_binding:add(Binding, Username),
-    Location = compose_binding_uri(SrcXNameBin, DstKind, DstNameBin, BindingKey, Args),
-    AppProps = [{{utf8, <<"location">>}, {utf8, Location}}],
-    {<<"201">>, AppProps, null};
+    ok = binding_action(add, Binding, Username, ConnPid),
+    {<<"204">>, null};
 
 handle_http_req(<<"DELETE">>,
                 [<<"bindings">>, BindingSegment],
                 _Query,
                 null,
                 Vhost,
-                #user{username = Username},
-                _ConnPid) ->
-    {SrcXNameBin, DstKind, DstNameBin, BindingKey, ArgsHash} = decode_binding_path_segment(BindingSegment),
+                User = #user{username = Username},
+                ConnPid) ->
+    {SrcXNameBin,
+     DstKind,
+     DstNameBin,
+     BindingKey,
+     ArgsHash} = decode_binding_path_segment(BindingSegment),
     SrcXName = rabbit_misc:r(Vhost, exchange, SrcXNameBin),
     DstName = rabbit_misc:r(Vhost, DstKind, DstNameBin),
+    ok = binding_checks(SrcXName, DstName, BindingKey, User),
     Bindings = rabbit_binding:list_for_source_and_destination(SrcXName, DstName),
     case search_binding(BindingKey, ArgsHash, Bindings) of
         {value, Binding} ->
-            ok = rabbit_binding:remove(Binding, Username);
+            ok = binding_action(remove, Binding, Username, ConnPid);
         false ->
             ok
     end,
-    {<<"204">>, [], null};
+    {<<"204">>, null};
 
 handle_http_req(<<"GET">>,
                 [<<"bindings">>],
@@ -218,20 +224,23 @@ handle_http_req(<<"GET">>,
                 Vhost,
                 _User,
                 _ConnPid) ->
-    {DstKind, DstNameBin} = case QueryMap of
-                                #{<<"dste">> := DstX} ->
-                                    {exchange, DstX};
-                                #{<<"dstq">> := DstQ} ->
-                                    {queue, DstQ};
-                                _ ->
-                                    throw(<<"400">>, "missing 'dste' or 'dstq' in query: ~tp", QueryMap)
-                            end,
+    {DstKind,
+     DstNameBin} = case QueryMap of
+                       #{<<"dste">> := DstX} ->
+                           {exchange, DstX};
+                       #{<<"dstq">> := DstQ} ->
+                           {queue, DstQ};
+                       _ ->
+                           throw(<<"400">>,
+                                 "missing 'dste' or 'dstq' in query: ~tp",
+                                 QueryMap)
+                   end,
     SrcXName = rabbit_misc:r(Vhost, exchange, SrcXNameBin),
     DstName = rabbit_misc:r(Vhost, DstKind, DstNameBin),
     Bindings0 = rabbit_binding:list_for_source_and_destination(SrcXName, DstName),
     Bindings = [B || B = #binding{key = K} <- Bindings0, K =:= Key],
     RespPayload = encode_bindings(Bindings),
-    {<<"200">>, [], RespPayload}.
+    {<<"200">>, RespPayload}.
 
 decode_queue({map, KVList}) ->
     M = lists:foldl(
@@ -424,19 +433,47 @@ args_hash([]) ->
     <<>>;
 args_hash(Args)
   when is_list(Args) ->
+    %% Args is already sorted.
     Bin = <<(erlang:phash2(Args, 1 bsl 32)):32>>,
     base64:encode(Bin, #{mode => urlsafe,
                          padding => false}).
+
+-spec binding_checks(rabbit_types:exchange_name(),
+                     resource_name(),
+                     rabbit_types:binding_key(),
+                     rabbit_types:user()) -> ok.
+binding_checks(SrcXName, DstName, BindingKey, User) ->
+    lists:foreach(fun(#resource{name = NameBin} = Name) ->
+                          ok = prohibit_default_exchange(Name),
+                          ok = prohibit_cr_lf(NameBin)
+                  end, [SrcXName, DstName]),
+    ok = check_resource_access(DstName, write, User),
+    ok = check_resource_access(SrcXName, read, User),
+    case rabbit_exchange:lookup(SrcXName) of
+        {ok, SrcX} ->
+            rabbit_amqp_session:check_read_permitted_on_topic(SrcX, User, BindingKey);
+        {error, not_found} ->
+            ok
+    end.
+
+binding_action(Action, Binding, Username, ConnPid) ->
+    try rabbit_channel:binding_action(Action, Binding, Username, ConnPid)
+    catch exit:#amqp_error{explanation = Explanation} ->
+              throw(<<"400">>, Explanation, [])
+    end.
 
 prohibit_cr_lf(NameBin) ->
     case binary:match(NameBin, [<<"\n">>, <<"\r">>]) of
         nomatch ->
             ok;
         _Found ->
-            throw(<<"400">>, <<"Bad name '~ts': \n and \r not allowed">>, [NameBin])
+            throw(<<"400">>,
+                  <<"Bad name '~ts': line feed and carriage return characters not allowed">>,
+                  [NameBin])
     end.
 
-prohibit_default_exchange(<<>>) ->
+prohibit_default_exchange(#resource{kind = exchange,
+                                    name = <<"">>}) ->
     throw(<<"403">>, <<"operation not permitted on the default exchange">>, []);
 prohibit_default_exchange(_) ->
     ok.
@@ -464,6 +501,6 @@ check_resource_access(Resource, Perm, User) ->
 
 -spec throw(binary(), io:format(), [term()]) -> no_return().
 throw(StatusCode, Format, Data) ->
-    Explanation = lists:flatten(io_lib:format(Format, Data)),
-    rabbit_log:warning(Explanation),
-    throw({?MODULE, StatusCode, Explanation}).
+    Reason0 = lists:flatten(io_lib:format(Format, Data)),
+    Reason = unicode:characters_to_binary(Reason0),
+    throw({?MODULE, StatusCode, Reason}).

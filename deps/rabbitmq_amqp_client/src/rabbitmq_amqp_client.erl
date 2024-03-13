@@ -143,13 +143,13 @@ declare_queue(LinkPair, QueueName, QueueProperties) ->
 
     case request(LinkPair, Props, Body) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"201">>} ->
+            case is_success(Resp) of
+                true ->
                     #'v1_0.amqp_value'{content = null} = amqp10_msg:body(Resp),
                     % {ok, proplists:to_map(KVList)};
                     {ok, #{}};
-                Other ->
-                    {error, Other}
+                false ->
+                    {error, Resp}
             end;
         Err ->
             Err
@@ -184,11 +184,9 @@ bind(DestinationKind, LinkPair, Destination, Source, BindingKey, BindingArgument
 
     case request(LinkPair, Props, Body) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"201">>} ->
-                    ok;
-                _ ->
-                    {error, Resp}
+            case is_success(Resp) of
+                true -> ok;
+                false -> {error, Resp}
             end;
         Err ->
             Err
@@ -229,8 +227,8 @@ unbind(DestinationChar, LinkPair, Destination, Source, BindingKey, BindingArgume
 
     case request(LinkPair, Props, null) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"200">>} ->
+            case is_success(Resp) of
+                true ->
                     #'v1_0.amqp_value'{content = {list, Bindings}} = amqp10_msg:body(Resp),
                     case search_binding_uri(BindingArguments, Bindings) of
                         {ok, Uri} ->
@@ -238,7 +236,7 @@ unbind(DestinationChar, LinkPair, Destination, Source, BindingKey, BindingArgume
                         not_found ->
                             ok
                     end;
-                _ ->
+                false ->
                     {error, Resp}
             end;
         Err ->
@@ -271,11 +269,9 @@ delete_binding(LinkPair, BindingUri) ->
               to => BindingUri},
     case request(LinkPair, Props, null) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"204">>} ->
-                    ok;
-                _ ->
-                    {error, Resp}
+            case is_success(Resp) of
+                true -> ok;
+                false -> {error, Resp}
             end;
         Err ->
             Err
@@ -300,15 +296,15 @@ purge_or_delete_queue(LinkPair, QueueName, PathSuffix) ->
               to => HttpRequestTarget},
     case request(LinkPair, Props, null) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"200">>} ->
+            case is_success(Resp) of
+                true ->
                     #'v1_0.amqp_value'{content = Content} = amqp10_msg:body(Resp),
                     {map, [
                            {{utf8, <<"message_count">>}, {ulong, Count}}
                           ]
                     } = Content,
                     {ok, #{message_count => Count}};
-                _ ->
+                false ->
                     {error, Resp}
             end;
         Err ->
@@ -343,12 +339,9 @@ declare_exchange(LinkPair, ExchangeName, ExchangeProperties) ->
 
     case request(LinkPair, Props, Body) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"204">>} ->
-                    #'v1_0.amqp_value'{content = null} = amqp10_msg:body(Resp),
-                    ok;
-                _ ->
-                    {error, Resp}
+            case is_success(Resp) of
+                true -> ok;
+                false -> {error, Resp}
             end;
         Err ->
             Err
@@ -362,11 +355,9 @@ delete_exchange(LinkPair, ExchangeName) ->
               to => <<"/exchanges/", XNameQuoted/binary>>},
     case request(LinkPair, Props, null) of
         {ok, Resp} ->
-            case amqp10_msg:properties(Resp) of
-                #{subject := <<"204">>} ->
-                    ok;
-                _ ->
-                    {error, Resp}
+            case is_success(Resp) of
+                true -> ok;
+                false -> {error, Resp}
             end;
         Err ->
             Err
@@ -402,3 +393,17 @@ request(#link_pair{session = Session,
 -spec message_id() -> binary().
 message_id() ->
     rand:bytes(8).
+
+%% All successful 2xx and redirection 3xx status codes are regarded as success.
+%% We don't hard code any specific status code for now as the returned status
+%% codes from RabbitMQ are subject to change.
+-spec is_success(amqp10_msg:amqp10_msg()) -> boolean().
+is_success(Response) ->
+    case amqp10_msg:properties(Response) of
+        #{subject := <<C, _, _>>}
+          when C =:= $2 orelse
+               C =:= $3 ->
+            true;
+        _ ->
+            false
+    end.
